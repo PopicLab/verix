@@ -1,0 +1,28 @@
+reference: "/data/datasets/references/refdata-GRCh38-2.1.0/fasta//genome.fa.chr1.fa" 
+min_intersv_dist: 50000 
+random_seed: 82 
+variant_sets: 
+ - type: "DEL" 
+   number: 200  
+   length_ranges:  
+    - [1000, 10000]  
+ - type: "DUP_INV" 
+   number: 200  
+   length_ranges:  
+    - [1000, 10000]  
+ - type: "dDUP" 
+   number: 200  
+   length_ranges:  
+    - [1000, 10000]  
+    - [50000, 100000] 
+ - type: "INVdel" 
+   number: 200  
+   length_ranges:  
+    - [1000, 10000]  
+    - [1000, 10000]  
+ - type: "delINVdel" 
+   number: 200  
+   length_ranges:  
+    - [1000, 10000]  
+    - [1000, 10000]  
+    - [1000, 10000]  
