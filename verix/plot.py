@@ -1,294 +1,202 @@
-import textwrap
 from plotnine import *
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
-import plotly.graph_objects as go
-import matplotlib.colors as mcolors
-import logging
-import os
-import numpy as np
-from mizani.transforms import pseudo_log_trans
-
-NORMAL_FONT = 11
-AXIS_FONT = 13
-TITLE_FONT = 17
+import warnings
+warnings.filterwarnings("ignore", message="divide by zero encountered in log10", category=RuntimeWarning)
 
 
-def process_counts(counts, is_gt=True):
-    records = []
-    for t1, modes in counts.items():
-        for mode, pred_types in modes.items():
-            for t2, val in pred_types.items():
-                gt_type = t1 if is_gt else t2
-                p_type = t2 if is_gt else t1
-                records.append([gt_type, p_type, val, mode])
-    return records
-
-
-class Plotter:
-    COLORS = {
-        'complete': '#00A138',  # Green
-        'partial': '#FFD700',  # Gold
-        'aggregate': '#FF7800',  # Orange
-        'miss': '#BF001E',  # Red
-        'grey': '#787878',  # Neutral for GT/Background
-        'FP': '#BF001E',  # Alias for Red
-        'FN': '#BF001E'  # Alias for Red
+class BenchPlotter:
+    MATCH_COLORS = {
+        "complete":  '#1B5E3F',  # dark green
+        "partial":   '#B8956A',  # warm tan
+        "aggregate": '#B5A8D1',  # soft lavender
+        "spurious":  '#6B1F2E',  # dark wine
+    }
+    TARGET_COLORS = {
+        'full': '#5A8F5A',  # muted sage green
+        'partial': '#D4A84A',  # soft amber
+        'miss': '#A04545',  # muted brick red
     }
 
-    def __init__(self, results_dict, output):
-        self.plot_function_dict = {'sankey': self.plot_sankey,
-                                   'breakends_dist': self.plot_breakends_distribution,
-                                   'stacked_barplot': self.plot_detection_barplot,
-                                   'fragmentation': self.plot_fragmentation_barplot
-                                   }
+    def __init__(self, out_dir, match_df, target_df):
+        self.out_dir = out_dir
+        self.match_df = match_df
+        self.target_df = target_df
+        self.n_query_types = self.match_df["QTYPE"].nunique()
+        self.n_target_types = self.target_df["TYPE"].nunique()
+        self.n_match_types =  self.match_df["BEST_MATCH_TYPE"].nunique()
 
-        self.output = output
-
-        self.truth_df = results_dict['truth_df']
-        self.pred_df = results_dict['pred_df']
-        self.optimal_df = results_dict['optimal_df']
-
-        self.optimal_counts_gt = pd.DataFrame(
-            process_counts(results_dict['count_optimal_gt'], is_gt=True),
-            columns=['gt_type', 'predicted_sv_type', 'counts', 'detection_mode'])
-        self.optimal_counts_calls = pd.DataFrame(
-            process_counts(results_dict['count_optimal_calls'], is_gt=True),
-            columns=['predicted_sv_type', 'gt_type', 'counts', 'detection_mode'])
-
-        self.plot_folder = self.output + '/plots/'
-        os.makedirs(self.plot_folder, exist_ok=True)
-
-    def plot(self):
-        for plottype, plot_function in self.plot_function_dict.items():
-            logging.info(f'Plotting {plottype} scatter')
-            plot_function()
-
-    def plot_sankey(self):
-        def hex_to_rgba(hex_code, alpha):
-            rgb = mcolors.to_rgb(hex_code)
-            return f'rgba({int(rgb[0] * 255)}, {int(rgb[1] * 255)}, {int(rgb[2] * 255)}, {alpha})'
-
-        df = self.optimal_counts_gt.copy()
-        modes = ['complete', 'aggregate', 'partial', 'miss']
-        masks = {m: df['detection_mode'].str.contains(m, na=False, regex=False) for m in modes}
-
-        compare_col = 'predicted_sv_type'
-        base_col = 'gt_type'
-
-        fp_mask = (df[compare_col] == 'miss')
-        simple_list = ['INV', 'DUP', 'DEL', 'INS', 'DUP:TANDEM']
-        simple_mask = df[base_col].isin(simple_list) & ~fp_mask
-        complex_mask = ~df[base_col].isin(simple_list) & ~fp_mask
-
-        gt_label = 'Ground Truth'
-
-        def get_w(type_mask, mode_key):
-            return df[type_mask & masks[mode_key]]['counts'].sum()
-
-        weights = {}
-        for prefix, m_mask in [('SMPL', simple_mask), ('CPLX', complex_mask)]:
-            weights[f'gt->{prefix}'] = df[m_mask]['counts'].sum()
-            for m in modes:
-                weights[f'{prefix}->{m}'] = get_w(m_mask, m)
-
-        cat_counts = {
-            gt_label: df[~fp_mask]['counts'].sum(),
-            'Simple': weights['gt->SMPL'],
-            'Complex': weights['gt->CPLX'],
-            'Complete': weights['SMPL->complete'] + weights['CPLX->complete'],
-            'Aggregate': weights['SMPL->aggregate'] + weights['CPLX->aggregate'],
-            'Partial': weights['SMPL->partial'] + weights['CPLX->partial'],
-            'Miss': weights['SMPL->miss'] + weights['CPLX->miss']
-        }
-
-        nodes = [gt_label, "Simple", "Complex", "Complete", "Aggregate", "Partial", "Miss"]
-        active_nodes = [n for n in nodes if cat_counts.get(n, 0) > 0]
-        ind_map = {name: i for i, name in enumerate(active_nodes)}
-
-        cat_colors = {
-            gt_label: hex_to_rgba(self.COLORS['grey'], 0.8),
-            'Simple': hex_to_rgba(self.COLORS['grey'], 0.8),
-            'Complex': hex_to_rgba(self.COLORS['grey'], 0.8),
-            'Complete': hex_to_rgba(self.COLORS['complete'], 0.8),
-            'Aggregate': hex_to_rgba(self.COLORS['aggregate'], 0.8),
-            'Partial': hex_to_rgba(self.COLORS['partial'], 0.8),
-            'Miss': hex_to_rgba(self.COLORS['miss'], 0.8)
-        }
-
-        raw_conns = [
-            (gt_label, 'Simple', weights['gt->SMPL'], hex_to_rgba(self.COLORS['grey'], 0.3)),
-            (gt_label, 'Complex', weights['gt->CPLX'], hex_to_rgba(self.COLORS['grey'], 0.3)),
-        ]
-
-        mode_to_node = {'complete': 'Complete', 'aggregate': 'Aggregate', 'partial': 'Partial', 'miss': 'Miss'}
-        for prefix in ['SMPL', 'CPLX']:
-            label = 'Simple' if prefix == 'SMPL' else 'Complex'
-            for m_key, target_node in mode_to_node.items():
-                w_key = f'{prefix}->{m_key}'
-                raw_conns.append((label, target_node, weights[w_key], hex_to_rgba(self.COLORS[m_key], 0.4)))
-
-        sources, targets, values, colors = [], [], [], []
-        for s, t, v, c in raw_conns:
-            if v > 0 and s in ind_map and t in ind_map:
-                sources.append(ind_map[s])
-                targets.append(ind_map[t])
-                values.append(v)
-                colors.append(c)
-
-        labels = [f"{n}<br>({int(cat_counts[n])})" for n in active_nodes]
-        if 'Complete' in ind_map and cat_counts[gt_label] > 0:
-            metric_val = cat_counts['Complete'] / cat_counts[gt_label]
-            metric_name = "Recall"
-            labels[ind_map['Complete']] += f"<br>{metric_name}: {metric_val:.1%}"
-
-        fig = go.Figure(data=[go.Sankey(
-            node=dict(pad=20, thickness=20, line=dict(color="black", width=0.5), label=labels, color=[cat_colors[n] for n in active_nodes]),
-            link=dict(source=sources, target=targets, value=values, color=colors)
-        )])
-
-        fig.update_layout(
-            title=dict(text=f"Sankey Diagram", x=0.5, font=dict(size=TITLE_FONT, color="black")),
-            font=dict(size=NORMAL_FONT),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+    @staticmethod
+    def base_theme(figure_size):
+        return (
+            theme_minimal() +
+            theme(axis_line=element_line(size=2, color="black"),
+            text=element_text(size=12, color="black"),
+            axis_title=element_text(size=12, color="black"),
+            plot_title=element_text(size=12, color="black"),
+            strip_text=element_text(size=10, color="black"),
+            legend_title=element_blank(),
+            panel_grid_major_x=element_blank(),
+            panel_grid_minor_y=element_blank(),
+            panel_grid_major_y=element_line(size=1, color="grey", linetype="dotted"),
+            figure_size=figure_size)
         )
-        self.save_plot(fig, 'sankey', is_plotly=True)
 
-    def plot_breakends_distribution(self):
-        """
-        Plots the distribution of Total Predicted Breakends, Spurious Breakends,
-        and Missing (Unmatched) Ground Truth Breakends per SV.
-        """
-        figsize = (8, 6)
+    @staticmethod
+    def scale_dim(n_categories, facets=1, extra=0):
+        return max(6, 0.8 * n_categories * facets + 3 + extra)
 
-        data_map = [
-            (self.truth_df, 'num_breakends', 'GT Breakends (All)'),
-            (self.truth_df, 'spurious', 'Missed GT Breakends'),
-            (self.truth_df.query("detection_mode != 'complete'"), 'num_breakends', 'GT Breakends (Incomplete)'),
-            (self.pred_df, 'num_breakends', 'Call Breakends (All)'),
-            (self.pred_df, 'spurious', 'Spurious Call Breakends'),
-            (self.pred_df.query("detection_mode != 'complete'"), 'num_breakends', 'Call Breakends (Incomplete)')
-        ]
+    # how many target records were fully missed or fully/partially covered by an optimal query alignment
+    def plot_target_capture_by_type(self, fraction=False):
+        return (
+                ggplot(self.target_df, aes(x="TYPE", fill="COV"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_target_types), 5))
+                + geom_bar(position=("fill" if fraction else "stack"))
+                + scale_fill_manual(values=self.TARGET_COLORS)
+                + labs(title="Target breakpoint capture across optimal query alignments",
+                       x="Target SV type", y=("Fraction" if fraction else "Count"))
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-        plot_list = []
-        for df, col, label in data_map:
-            if not df.empty:
-                temp_df = pd.DataFrame({'value': df[col], 'Metric': label})
-                plot_list.append(temp_df)
+    # how many target records were fully missed or fully/partially covered by the union of all query matches
+    def plot_target_capture_by_union(self, fraction=False):
+        return (
+                ggplot(self.target_df, aes(x="TYPE", fill="UNION_COV"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_target_types), 5))
+                + geom_bar(position=("fill" if fraction else "stack"))
+                + scale_fill_manual(values=self.TARGET_COLORS)
+                + labs(title="Target breakpoint capture across all candidate query alignments",
+                       x="Target SV type", y="Number of targets")
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-        if not plot_list:
-            return None
+    # how many target breakpoints were matched in optimal alignments, stratified by match category and target type
+    def plot_target_breakpoint_hit_rate(self):
+        df = self.match_df.dropna(subset=["BEST_N_MATCHED", "BEST_MATCH_TYPE"]).copy()
+        df = df[df["BEST_MATCH_CLASS"] != "spurious"]
+        return (
+                ggplot(df, aes(x="BEST_N_MATCHED"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_match_types), self.scale_dim(self.n_target_types)))
+                + geom_bar(aes(fill="..x..", group=1), color="white", show_legend=False)
+                + scale_fill_gradient(low="#F7FCB9", high="#1B5E3F")
+                + scale_y_log10(minor_breaks=[])
+                + scale_x_continuous(breaks=range(0, int(df["BEST_N_MATCHED"].max()) + 1), minor_breaks=[])
+                + facet_grid("BEST_MATCH_TYPE~BEST_MATCH_CLASS")
+                + labs(title="Target breakpoints matched by target SV type",
+                       x="Number of records", y="Number of target breakpoints matched")
+                + theme(axis_text_x=element_text(rotation=0, ha="right")))
 
-        plot_df = pd.concat(plot_list).dropna(subset=['value'])
-        metric_order = [m[2] for m in data_map]
-        plot_df['Metric'] = pd.Categorical(plot_df['Metric'], categories=metric_order, ordered=True)
+    # how many query events are in each match category, stratified by query type
+    def plot_match_category_by_type(self):
+        return (
+                ggplot(self.match_df, aes(x="QTYPE", fill="BEST_MATCH_CLASS"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_query_types), 5))
+                + geom_bar(position=position_dodge2(preserve="single"))
+                + scale_y_log10(minor_breaks=[])
+                + scale_fill_manual(values=self.MATCH_COLORS)
+                + labs(title="Match category split by query SV type", x="Query SV type", y="Count")
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-        p = (ggplot(plot_df, aes(x='Metric', y='value', fill='Metric'))
-             + geom_boxplot(outlier_size=0.5, outlier_alpha=0.5, alpha=0.8)
-             + scale_y_continuous(trans=pseudo_log_trans(base=10))
-             + labs(title=f'Breakend Distributions per SV', x='', y='Number Breakends (pseudo-log scale)')
-             + theme_minimal()
-             + theme(figure_size=figsize, legend_position='none',
-                     axis_text_x=element_text(rotation=25, hjust=1, size=NORMAL_FONT, color="black"),
-                     axis_text_y=element_text(size=NORMAL_FONT, color="black"),
-                     plot_title=element_text(size=TITLE_FONT, weight='bold', ha='center'),
-                     panel_border=element_rect(color="black", size=1))
-             )
+    # how many different targets were matched by the query (on at least 1 breakpoint)
+    def plot_targets_per_query(self):
+        df = self.match_df.copy()
+        df = df[df["BEST_MATCH_CLASS"] != "spurious"]
+        return (
+                ggplot(df, aes(x="NTARGETS"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_match_types), self.scale_dim(self.n_query_types)))
+                + geom_bar(aes(fill="..x.."), color="white", show_legend=False)
+                + scale_fill_gradientn(colors=["#1B7837", "#A50F15"])
+                + scale_y_log10(minor_breaks=[])
+                + scale_x_continuous(breaks=range(0, int(df["NTARGETS"].max()) + 1), minor_breaks=[])
+                + facet_grid("QTYPE~BEST_MATCH_CLASS")
+                + labs(title="Distinct targets matched per query record",
+                       x="Number of distinct targets in candidate alignments",
+                       y="Number of query records"))
 
-        self.save_plot(p, 'breakends_distribution')
-        return p
+    # total breakpoint distance to optimal match
+    def plot_optimal_distance_histogram(self):
+        df = self.match_df.dropna(subset=["BEST_BND_DIST"]).copy()
+        df = df[df["BEST_MATCH_CLASS"] != "spurious"]
+        return (
+                ggplot(df, aes(x="BEST_BND_DIST"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_match_types), self.scale_dim(self.n_query_types)))
+                + geom_histogram(aes(fill="..x.."), bins=10, color="white", show_legend=False)
+                + scale_fill_gradient(low="#FEE5D9", high="#A50F15")
+                + facet_grid("QTYPE~BEST_MATCH_CLASS", scales="free")
+                + scale_y_log10(minor_breaks=[])
+                + labs(title="Optimal alignment breakpoint distance",
+                       x="Sum of distances across all matched breakpoints", y="Count")
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-    def plot_detection_barplot(self):
-        """
-        Plot a stacked barplot with the type of detection for each ground truth type
-        """
-        figsize = (6, 8)
-        df_plot = self.optimal_counts_calls.copy()
+    # number of query records with at least 1 spurious breakpoint, stratified by query type
+    def plot_records_with_spurious(self):
+        df = self.match_df[self.match_df["SPURIOUS"] >= 1]
+        return (
+                ggplot(df, aes(x="QTYPE", fill="BEST_MATCH_CLASS"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_query_types), 5))
+                + geom_bar(position=position_dodge2(preserve="single"))
+                + scale_y_log10(minor_breaks=[])
+                + scale_fill_manual(values=self.MATCH_COLORS)
+                + labs(title="Records with at least one spurious breakpoint",
+                       x="Query SV type", y="Number of records")
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-        df_plot = df_plot[df_plot['predicted_sv_type'] != 'NA']
-        if df_plot.empty: return
+    # number of query records that are fragmented, stratified by query type
+    def plot_fragmented_records(self):
+        df = self.match_df[self.match_df["FRAGMENTED"] >= 1]
+        return (
+                ggplot(df, aes(x="QTYPE", fill="BEST_MATCH_CLASS"))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_query_types), 5))
+                + geom_bar(position=position_dodge2(preserve="single"))
+                + scale_y_log10(minor_breaks=[])
+                + scale_fill_manual(values=self.MATCH_COLORS)
+                + labs(title="Fragmented records",
+                       x="Query SV type", y="Number of records")
+                + theme(axis_text_x=element_text(rotation=30, ha="right")))
 
-        df_plot['predicted_sv_type'] = df_plot['predicted_sv_type'].apply(lambda x: textwrap.fill(str(x), width=35))
-        df_plot['detection_mode'] = pd.Categorical(df_plot['detection_mode'],
-                                                   categories=['complete', 'aggregate', 'partial', 'miss'],
-                                                   ordered=True)
+    def plot_optimal_type_correspondence(self):
+        df = self.match_df.dropna(subset=["BEST_MATCH_TYPE"])
+        counts = (df.groupby(["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"], observed=True)
+                  .size().reset_index(name="n"))
+        all_types = sorted(set(self.match_df["QTYPE"].dropna().unique())
+                           | set(self.match_df["BEST_MATCH_TYPE"].dropna().unique()))
+        full_index = pd.MultiIndex.from_product(
+            [counts["BEST_MATCH_CLASS"].unique(), all_types, all_types],
+            names=["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"])
+        counts = (counts.set_index(["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"])
+                  .reindex(full_index, fill_value=0).reset_index())
+        n_facets = counts["BEST_MATCH_CLASS"].nunique()
+        return (
+                ggplot(counts, aes(x="BEST_MATCH_TYPE", y="QTYPE", fill="n"))
+                + theme_minimal()
+                + theme(figure_size=(max(6.0, 0.4 * len(all_types) + 2.0),
+                                     max(4, 0.4 * len(all_types) * n_facets + 2)),
+                        axis_text_x=element_text(rotation=45, ha="right"),
+                        strip_text=element_text(size=14),
+                        panel_border=element_rect(color="black", size=1, fill=None),
+                        panel_grid_major=element_blank(),
+                        panel_grid_minor=element_blank(),
+                        axis_ticks=element_blank())
+                + facet_wrap("~BEST_MATCH_CLASS", ncol=1, scales="free_x")
+                + geom_tile(color="white", size=0.4)
+                + geom_text(aes(label="n"), data=counts[counts["n"] > 0], size=8)
+                + scale_fill_gradient(low="#f7f7f7", high="#1f77b4", name="Count")
+                + labs(title="Query versus target SV type correspondence for optimal matches",
+                       x="Target SV type", y="Query SV type"))
 
-        df_plot = df_plot.groupby(['predicted_sv_type', 'detection_mode'], observed=True)['counts'].sum().reset_index()
-        df_totals = df_plot.groupby(['predicted_sv_type'], observed=True)['counts'].sum().reset_index()
-
-        df_plot = df_plot.merge(df_totals.rename(columns={'counts': 'total_counts'}), on=['predicted_sv_type'],
-                                how='left')
-        #Manually compute log scale to allow correct propotions for the different stacks
-        df_plot['log_total'] = np.log1p(df_plot['total_counts'])
-        df_plot['proportion'] = df_plot['counts'] / df_plot['total_counts']
-        # Ensures the proportions of the stacked bar are correct despite logscale
-        df_plot['pseudo_count'] = df_plot['proportion'] * df_plot['log_total']
-
-        df_totals['log_total'] = np.log1p(df_totals['counts'])
-        df_plot['inner_label'] = df_plot.apply(lambda row: f"{row['proportion'] * 100:.0f}%" if (
-                    row['counts'] > 0 and row['proportion'] >= 0.05 and row['proportion'] != 1.) else "", axis=1)
-
-        log_breaks_raw = [0, 10, 100, 1000, 10000, 100000]
-        log_breaks_mapped = [np.log1p(v) for v in log_breaks_raw]
-
-        p = (ggplot(df_plot, aes(x='predicted_sv_type', y='pseudo_count', fill='detection_mode'))
-             + geom_col(width=0.6, position='stack')
-             + scale_fill_manual(values=self.COLORS, name="Detection Mode")
-             + scale_y_continuous(breaks=log_breaks_mapped, labels=['0', '10', '100', '1,000', '10,000', '100,000'],
-                                  expand=(0, 0, 0.15, 0.02))
-             + geom_text(aes(label='inner_label'), position=position_stack(vjust=0.5),
-                         size=NORMAL_FONT - 5, color="black")
-             + geom_text(data=df_totals, mapping=aes(label='counts', x='predicted_sv_type', y='log_total'),
-                         inherit_aes=False, angle=45, va='bottom', ha='center', format_string="{:,.0f}",
-                         size=NORMAL_FONT - 1)
-             + labs(title=f'Counts per Detection Mode', x='Predicted SV type', y='SV count')
-             + theme_minimal()
-             + theme(figure_size=figsize, legend_position='top', axis_line=element_line(size=1, color="black"),
-                     panel_grid_major_x=element_blank(),
-                     axis_text_x=element_text(size=NORMAL_FONT, rotation=70, hjust=1, color="black"),
-                     axis_text_y=element_text(size=NORMAL_FONT, color="black"),
-                     axis_title=element_text(size=AXIS_FONT, weight="bold"),
-                     plot_title=element_text(size=TITLE_FONT, weight='bold', ha='center'))
-             )
-
-        self.save_plot(p, 'stacked_barplot')
-        return p
-
-    def plot_fragmentation_barplot(self):
-        """
-        Plots a bar chart showing the total count of fragmented predictions
-        broken down by the Ground Truth SV Type they attempted to cover.
-        """
-        figsize = (6, 5)
-        df = self.optimal_df.copy()
-        df = df[(df['fragmented'] == True) & (df['is_optimal_GT'] == True)]
-        if df.empty: return
-
-        counts = df.groupby(['GT type']).size().reset_index(name='fragment_count')
-
-        p = (ggplot(counts, aes(x='GT type', y='fragment_count', fill='GT type'))
-             + geom_col(width=0.6, color="black", size=0.2)
-             + geom_text(aes(label='fragment_count'), va='bottom', size=NORMAL_FONT - 1)
-             + scale_y_continuous(expand=(0, 0, 0.15, 0))
-             + labs(title='Fragmented Calls per GT SV Type', x='Ground Truth SV Type',
-                    y='Fragmented Calls')
-             + theme_minimal()
-             + theme(figure_size=figsize, legend_position='none',
-                     axis_text_x=element_text(rotation=35, hjust=1, size=NORMAL_FONT, color="black"),
-                     axis_text_y=element_text(size=NORMAL_FONT, color="black"),
-                     plot_title=element_text(size=TITLE_FONT, weight='bold', ha='center'),
-                     panel_grid_major_x=element_blank())
-             )
-
-        self.save_plot(p, 'fragmented_calls')
-        return p
-
-    def save_plot(self, plot_obj, name, is_plotly=False):
-        filename = f"{name}.svg"
-        full_path = os.path.join(self.plot_folder, filename)
-
-        if is_plotly:
-            plot_obj.write_image(full_path, format='svg')
-        else:
-            plot_obj.save(full_path, format='svg', verbose=False, dpi=500, limitsize=False)
-
-        logging.info(f"Saved: {full_path}")
+    def make_plots(self):
+        plots = {
+            "optimal_match_category_by_type": self.plot_match_category_by_type(),
+            "records_with_spurious": self.plot_records_with_spurious(),
+            "records_fragmented": self.plot_fragmented_records(),
+            "optimal_distance": self.plot_optimal_distance_histogram(),
+            "targets_per_query": self.plot_targets_per_query(),
+            "target_capture_by_type": self.plot_target_capture_by_type(),
+            "target_capture_by_union": self.plot_target_capture_by_union(),
+            "target_breakpoint_hit_rate": self.plot_target_breakpoint_hit_rate(),
+            "optimal_type_correspondence": self.plot_optimal_type_correspondence(),
+        }
+        with PdfPages(self.out_dir / f"report.pdf") as pdf:
+            for name, p in plots.items():
+                fig = p.draw()
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)

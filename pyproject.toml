@@ -7,7 +7,7 @@ include = ["verix*"]
 
 [project]
 name = "verix"
-version = "0.0.1"
+version = "0.0.2"
 description = "A benchmarking and plotting tool for Complex SV callers evaluation"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,4 +16,4 @@ dependencies = [
 ]
 
 [project.scripts]
-verix = "verix.main:run_main"
+verix = "verix.main:main"

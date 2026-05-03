@@ -1,192 +1,113 @@
 import argparse
 import logging
-import sys
 from pathlib import Path
+import sys
 
 from verix import __version__, __toolname__
-from verix.parser import parse
-from verix.sv import Callset
-from verix.bench import BenchCallset
-from verix.plot import Plotter
-from verix.merge import ConsensusCallset
-from verix.vcf_writer import write_merge_vcf
-
-
-FORMAT_CHOICES = ['default', 'single_rec', 'multi_rec']
+from verix.io import parse_vcf, VCFFormat, write_csv_vcf
+from verix.sv import BreakpointAligner
+from verix.bench import BenchmarkEngine
+from verix.merge import MergeEngine
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description=f"{__toolname__} {__version__}")
+    parser = argparse.ArgumentParser(description=f"{__toolname__} {__version__}",
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     subparsers = parser.add_subparsers(dest='command', required=True)
-
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument('-o', '--output', required=True, help='Output directory.')
-    shared.add_argument('-st', '--svtype', default='SVTYPE', help='INFO field used as SV type.')
-    shared.add_argument('-mt', '--match_threshold', default=500, type=int, help='Max distance between breakends (500).')
-    shared.add_argument('-mrt', '--match_ratio_thresh', default=None, type=float,
-                        help='Min ratio of matched breakends.')
-    shared.add_argument('-bpt', '--bp_merge_threshold', default=2, type=int, help='Distance to merge breakends (2).')
-    shared.add_argument('-s', '--sizemin', default=0.0, type=float, help='Filter SVs smaller than this (0).')
-    shared.add_argument('-S', '--sizemax', default=None, type=float, help='Filter SVs larger than this.')
-    shared.add_argument('-chr', '--chr_list', default=None, nargs='+', help='Filter SV records not in this list.')
-    shared.add_argument('-q', '--qual', default=0.0, type=float, help='Filter SV records of insufficient quality (0).')
-    shared.add_argument('--enforce_svtype', action='store_true', help='Whether the SV type should be ignored when finding candidates (False).')
-    shared.add_argument('--enforce_genotype', action='store_true',
-                        help='Whether the genotype should be ignored when finding candidates (False).')
+    shared.add_argument('-o', '--output_dir', metavar='', required=True, help='Output directory')
+    shared.add_argument('-d', '--match_thr', metavar='', default=500, type=int, help='Max distance between matching breakpoints')
+    shared.add_argument('-s', '--sizemin', metavar='', default=0, type=int, help='Minimum SV interval size')
+    shared.add_argument('-S', '--sizemax', metavar='', default=None, type=int, help='Maximum SV interval size')
+    shared.add_argument('-b', '--merge_thr', metavar='', default=1, type=int,
+                        help='Collapse breakends in a CSV within this distance into a single breakpoint')
+    shared.add_argument('--enforce_type', action='store_true', help='Require SV types to match')
+    shared.add_argument('--enforce_genotype', action='store_true', help='Require SV genotypes to match')
+    shared.add_argument('-f', '--formats', nargs='+', default=[], choices=[e.value for e in VCFFormat],
+                        help='Format type for each VCF (expected order for bench: query, target)')
+    shared.add_argument('-l', '--csv_links', metavar='LINK', nargs='+', default=[],
+                       help='INFO field for CSV linking in each VCF (expected order for bench: query, target)')
+    shared.add_argument('-svt', '--types', nargs='+', default=[], help='INFO field for SV type extraction (default SVTYPE)')
 
     # Benchmarking parameters
-    bench = subparsers.add_parser('bench', parents=[shared], help='Benchmark VCF files against a truth set.')
+    bench = subparsers.add_parser('bench', parents=[shared], help='Compare two VCF files (query and target/truthset)',
+                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     bench.set_defaults(func=benchmark)
+    bench.add_argument('-q', '--query', metavar='', required=True, help='VCF file with query CSVs')
+    bench.add_argument('-t', '--target', metavar='', required=True, help='VCF file with target CSVs')
+    bench.add_argument('--plot', action='store_true', help='Generate benchmarking figures')
 
-    bench.add_argument('-p', '--pred', required=True, help='VCF file to compare.')
-    bench.add_argument('-t', '--truth', required=True, help='Truth set VCF file.')
-    bench.add_argument('-ft', '--format_truth', required=False, default='default', choices=FORMAT_CHOICES, help='Truth format (default).')
-    bench.add_argument('-fp', '--format_pred', required=False, default='default', choices=FORMAT_CHOICES, help='Compare format (default).')
-    bench.add_argument('-csvt', '--csv_info_truth', default=None, help='INFO field for base SVID/BKPS.')
-    bench.add_argument('-csvp', '--csv_info_pred', default=None, help='INFO field for compare SVID/BKPS.')
-    #bench.add_argument('--pick', default='single', choices=['single', 'multi'], help='Match allowance (single).')
-    bench.add_argument('-ubt', '--unmatched_bnds_thresh', default=None, type=int, help='Max unmatched breakends allowed (None).')
-    bench.add_argument('--plot', action='store_true',
-                       help='Whether benchmarking figures should be generated (False).')
-
-    # Merge parameters
-    merge = subparsers.add_parser('merge', parents=[shared], help='Merge VCF files into a merge.')
-    merge.set_defaults(func=run_merge)
-
-    merge.add_argument('-i', '--inputs', nargs='+', required=True, help='List of VCF files to merge.')
-    merge.add_argument('-f', '--formats', nargs='+', required=True, choices=FORMAT_CHOICES,
-                           help='Formats for inputs.')
-    merge.add_argument('-csv', '--csv_info_list', nargs='+', default=None, help='INFO field list for SVID/BKPS.')
-    merge.add_argument('-src', '--sources', nargs='+', help='Ordered list of names for merging.')
-    merge.add_argument('-ubt', '--unmatched_bnds_thresh', default=0, type=int, help='Max unmatched breakends allowed (0).')
-
+    # Consensus parameters
+    merge = subparsers.add_parser('consensus', parents=[shared], help='Merge a single or multiple VCF files into a single consensus VCF',
+                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    merge.set_defaults(func=consensus)
+    merge.add_argument('-i', '--inputs', nargs='+', metavar='VCF', required=True, help='List of VCF files to merge')
+    merge.add_argument('-n', '--names', nargs='+', metavar='NAME', default=[], help='Ordered list of names for each VCF')
     return parser.parse_args()
 
 
-def default_csv_info(csv_info, vcf_format):
-    if csv_info is None:
-        csv_info = 'SVID' if vcf_format == 'multi_rec' else 'BKPS'
-    return csv_info
+def benchmark(args):
+    for param_name, param in [("formats", args.formats), ("types", args.types)]:
+        if param and len(param) != 2:
+            raise ValueError(f"--{param_name} must have exactly 2 entries: query, target")
+    if args.formats and len(args.csv_links) != 2:
+        raise ValueError("--csv_links must have 2 entries when --formats is set")
+    if not args.formats and args.csv_links:
+        raise ValueError("--csv_links requires --formats to be set")
+    fq, ft = args.formats if args.formats else (VCFFormat.DEFAULT, VCFFormat.DEFAULT)
+    lq, lt = args.csv_links if args.csv_links else (None, None)
+    tq, tt = args.types if args.types else ("SVTYPE", "SVTYPE")
+    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr)
+    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr)
+    logging.info(f"Loaded {len(query_svs)} query SVs")
+    logging.info(f"Loaded {len(target_svs)} target/truthset SVs")
+    engine = BenchmarkEngine(query_svs,
+                             target_svs,
+                             BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
+    engine.find_matches()
+    engine.write_stats(Path(args.output_dir) / "report.json")
+    engine.write_vcf(Path(args.output_dir) / "matches.vcf")
+    write_csv_vcf(query_svs, Path(args.output_dir) / "query.vcf")
+    write_csv_vcf(target_svs, Path(args.output_dir) / "target.vcf")
+    if args.plot:
+        (Path(args.output_dir) / "plots").mkdir(parents=True, exist_ok=True)
+        engine.generate_plots(Path(args.output_dir) / "plots")
 
 
-def benchmark(pred, truth, output, format_truth='bnd', format_pred='bnd', csv_info_truth=None, csv_info_pred=None,
-              svtype='SVTYPE', pick='single', qual=None, match_threshold=500, bp_merge_threshold=2, chr_list=None,
-              sizemin=0, sizemax=None, unmatched_bnds_thresh=None, match_ratio_thresh=None, enforce_svtype=True, enforce_genotype=True,
-              plot=True):
-    output_folder = output + '/output/'
+def consensus(args):
+    n_inputs = len(args.inputs)
+    for param_name, param in [("formats", args.formats), ("types", args.types),
+                              ("csv_links", args.csv_links), ("names", args.names)]:
+        if param and len(param) != n_inputs:
+            raise ValueError(f"--{param_name} must have exactly {n_inputs} entries")
+        if param_name == "names" and len(param) != len(set(param)):
+            raise ValueError(f"--names cannot have duplicate entries")
+    if not args.formats and args.csv_links:
+        raise ValueError("--csv_links requires --formats to be set")
+    logging.info(f"Parsing {len(args.inputs)} VCF files for consensus generation...")
+    names = args.names or range(len(args.inputs))
+    svs = []
+    for i, vcf_path in enumerate(args.inputs):
+        svs.append(parse_vcf(vcf_path,
+                             vcf_format=args.formats[i] if args.formats else VCFFormat.DEFAULT,
+                             csv_link_name=args.csv_links[i] if args.csv_links else None,
+                             type_name=args.types[i] if args.types else "SVTYPE",
+                             merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax, name=names[i]))
+    engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
+    engine.find_sv_clusters()
+    engine.write_stats(Path(args.output_dir) / "report.json")
+    engine.write_vcf(Path(args.output_dir) / "merged.vcf")
 
-    csv_info_truth = default_csv_info(csv_info_truth, format_truth)
-    csv_info_pred = default_csv_info(csv_info_pred, format_pred)
-
-    pred_svs = parse(pred, vcf_format=format_pred, csv_info=csv_info_pred, svtype_name=svtype,
-                         merge_threshold=bp_merge_threshold, chr_list=chr_list, sizemin=sizemin, sizemax=sizemax, qual=qual)
-    assert pred_svs, 'No SV found in pred'
-    logging.info(f"Loaded a total of {len(pred_svs)} call SVs.")
-
-    pred_callset = Callset(pred_svs)
-
-    gt_svs = parse(truth, vcf_format=format_truth, csv_info=csv_info_truth, svtype_name=svtype, merge_threshold=bp_merge_threshold, chr_list=chr_list,
-                   sizemin=sizemin, sizemax=sizemax, qual=qual)
-    assert gt_svs, 'No SV found in truth'
-    logging.info(f"Loaded a total of {len(gt_svs)} truth SVs.")
-
-    gt_callset = BenchCallset(gt_svs, pred_callset=pred_callset, thresh=match_threshold, unmatched_bnds_thresh=unmatched_bnds_thresh,
-                              match_ratio_thresh=match_ratio_thresh, enforce_svtype=enforce_svtype, enforce_genotype=enforce_genotype)
-
-    logging.info("Matching SVs")
-    gt_callset.collect_candidate_detections()
-    gt_callset.select_best_matches(pick=pick)
-
-    # Write VCF output
-    logging.info("Generating outputs")
-    results_dict = gt_callset.create_outputs(output_folder)
-
-    if plot:
-        Plotter(results_dict, output_folder).plot()
-
-
-def run_merge(inputs, output, formats, csv_info_list=None, svtype='SVTYPE', qual=0, sources=None,
-              match_threshold=500, bp_merge_threshold=1, chr_list=None, sizemin=0, sizemax=None,
-              unmatched_bnds_thresh=None, match_ratio_thresh=None, enforce_svtype=True, enforce_genotype=True,):
-    output_folder = Path(output) / 'output'
-    output_folder.mkdir(parents=True, exist_ok=True)
-
-    all_svs = []
-    ordered_sources = [] if sources is None else sources
-
-    logging.info(f"Parsing {len(inputs)} VCF files for merge building...")
-
-    for idx_vcf, vcf_path in enumerate(inputs):
-        # Use the filename (without extension) as the source identifier
-
-        if sources is None:
-            source_name = Path(vcf_path).stem + '_' + str(idx_vcf)
-            ordered_sources.append(source_name)
-        else:
-            source_name = sources[idx_vcf]
-
-        assert idx_vcf < len(formats), f'Please provide the format for each file provided {len(formats)} for {len(inputs)} files.'
-        vcf_format = formats[idx_vcf]
-        csv_info = None
-        if csv_info_list is not None:
-            assert idx_vcf < len(
-                csv_info_list), ('When provided csv_info_list must define the csv info name for each file incluing the ones in format bnd. '
-                                 f'Provided {len(csv_info_list)} for {len(inputs)} files.')
-            csv_info = csv_info_list[idx_vcf]
-        csv_info = default_csv_info(csv_info, vcf_format)
-        svs = parse(vcf_path, vcf_format=vcf_format, csv_info=csv_info, svtype_name=svtype, merge_threshold=bp_merge_threshold,
-                    chr_list=chr_list, sizemin=sizemin, sizemax=sizemax, qual=qual, source=source_name)
-        if not svs:
-            logging.warning(f'No SV found in {vcf_path}')
-        all_svs.extend(svs)
-    assert all_svs, 'No SV found in all VCF files'
-    logging.info(f"Loaded a total of {len(all_svs)} SVs. Building merge...")
-
-    merge_callset = ConsensusCallset(
-        svs=all_svs,
-        thresh=match_threshold,
-        unmatched_bnds_thresh=unmatched_bnds_thresh,
-        match_ratio_thresh=match_ratio_thresh,
-        ordered_sources=ordered_sources,
-        enforce_svtype=enforce_svtype,
-        enforce_genotype=enforce_genotype
-    )
-
-    merge_callset.merge()
-
-    logging.info(f"Generated {len(merge_callset.merge_list)} merge SV clusters.")
-
-    write_merge_vcf(merge_callset, ordered_sources, output_folder)
-    logging.info(f"Consensus outputs written to {output_folder}/merge.vcf")
-
-
-def run_main():
+def main():
     args = parse_args()
-    out_path = Path(args.output)
-    log_dir = out_path / "logs"
-    out_dir = out_path / "output"
-
-    # setup the experiment directory structure
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-
-    # logging
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(log_dir / 'main.log', mode='w'),
+                        handlers=[logging.FileHandler(args.output_dir + '/main.log', mode='w'),
                                   logging.StreamHandler(sys.stdout)])
-    
-    # Prevents plotly to fill the terminal when generating sankey plots
-    logging.getLogger("kaleido").setLevel(logging.WARNING)
-    logging.getLogger("choreographer").setLevel(logging.WARNING)
-
     logging.info(f"{__toolname__} version {__version__}")
-    logging.info(args)
-
-    args_dict = vars(args)
-    command = args_dict.pop('command')
-    func = args_dict.pop('func')
-    func(**args_dict)
+    logging.info("\n ***Params***\n" + "\n".join(f" {k}: {v}" for k, v in vars(args).items() if not callable(v)))
+    args.func(args)
 
 
 if __name__ == '__main__':
-    run_main()
+    main()

@@ -1,118 +1,90 @@
 from collections import defaultdict
-from dataclasses import dataclass
+import json
+import logging
 import networkx as nx
 from networkx.algorithms.components import connected_components
-from collections import Counter
 
-from verix.sv import MatchCallset, SV
-
-
-@dataclass
-class SVConsensus:
-    merge_id: str
-    representative_sv: SV
-    support_vec: str
-    support_count: int
-    support_count_vec: str
-    stringified_recs: dict[str, str]
+from verix.io import write_merge_vcf
+from verix.sv import BreakpointAlignment, Callset
 
 
-def stringify_merge_rec(sv):
-    # Process the records to be written in the merged record
-    stringify_rec = []
-    for rec in sv.records:
-        chrom2 = rec.chrom
-        if 'CHROM2' in rec.info:
-            chrom2 = rec.info['CHROM2']
-        stringify_rec.append(
-            f"{rec.id}|{rec.chrom}:{rec.pos}|{chrom2}:{rec.stop}|{sv.parent_type}|{sv.parent_id}")
-    return stringify_rec
+class SVCluster:
+    def __init__(self, cluster_id, svs_by_sample, samples):
+        self.cluster_id = cluster_id
+        self.svs_by_sample = svs_by_sample
+        self.samples = samples
+        self.representative = self.get_representative()
+        self.support_vec = self.compute_support()
+        self.size = sum(len(v) for v in svs_by_sample.values())
 
+    def get_representative(self):
+        return max((sv for s in self.svs_by_sample for sv in self.svs_by_sample[s]), key=lambda x: len(x.bkps))
 
-def join_stringified_records(record_by_source):
-    return {source: ','.join(record_list) for source, record_list in record_by_source.items()}
+    def compute_support(self):
+        return [len(self.svs_by_sample[src]) if src in self.svs_by_sample else 0 for src in self.samples]
 
+    def serialize_records(self, sample):
+        if sample not in self.svs_by_sample: return "."
+        return "|".join(f'{sv.id},{sv.type},{sv.breakpoints2str()}' for sv in self.svs_by_sample[sample])
 
-def compute_support(support, ordered_sources):
-    # Compute support vector
-    supp_vec = "".join(['1' if src in support else '0' for src in ordered_sources])
-    supp_count = len(support)
+    def to_vcf_info_dict(self):
+        info = {'SUPPORT': len(self.svs_by_sample),
+                'SUPPORT_COUNT': ",".join(str(c) for c in self.support_vec),
+                'SUPPORT_BINARY': "".join(str(int(c > 0)) for c in self.support_vec)}
+        return info
 
-    source_tally = Counter(support)
-    supp_counts_vec = "-".join([str(source_tally[src]) for src in ordered_sources])
-    return {'supp_vec': supp_vec, 'supp_count_vec': supp_counts_vec, 'supp_count': supp_count}
+    vcf_info_fields = {
+        'SUPPORT': ('1', 'Integer', 'Number of distinct input samples supporting this SV'),
+        'SUPPORT_COUNT': ('1', 'String', 'Count vector indicating how many variants were merged from each sample'),
+        'SUPPORT_BINARY': ('1', 'String', 'Binary vector indicating sample support'),
+    }
 
+class MergeEngine:
+    def __init__(self, svs, aligner):
+        self.callsets = svs
+        self.aligner = aligner
+        self.sv_clusters = []
+        self.sample_names = [c.sample_name for c in self.callsets]
 
-class ConsensusCallset(MatchCallset):
-    def __init__(self, svs, thresh, ordered_sources, unmatched_bnds_thresh=None, match_ratio_thresh=None,
-                 enforce_svtype=False, enforce_genotype=False):
-        super().__init__(svs, thresh=thresh, unmatched_bnds_thresh=unmatched_bnds_thresh, match_ratio_thresh=match_ratio_thresh,
-                         enforce_svtype=enforce_svtype, enforce_genotype=enforce_genotype)
-        self.ordered_sources = ordered_sources
-        self.merge_list = []
-
-    def build_merge_graph(self):
-        # Build a graph of overlapping SV fulfilling the merge constraints
-        edge_list = []
-        for sv in self.svs:
-            self.find_candidates(sv, self.pid2sv, self.all_bnds, self.all_bnds_pos)
-
-            for candidate_sv_id in sv.candidates:
-                candidate_sv = self.pid2sv[candidate_sv_id]
-                # prevent double counting
-                if candidate_sv_id <= sv.parent_id:
-                    continue
-
-                matched_bnds = self.align_candidates(sv, candidate_sv)
-
-                total_num_bnds_call = len(sv.breakends)
-                total_num_bnds_candidate = len(candidate_sv.breakends)
-                diff_bnd = total_num_bnds_call + total_num_bnds_candidate - 2 * len(matched_bnds)
-
-                if self.filter_candidate(diff_bnd, len(matched_bnds), diff_bnd + len(matched_bnds)): continue
-                edge_list.append((sv, candidate_sv))
-        merge_graph = nx.Graph()
-        merge_graph.add_nodes_from(self.svs)
-        merge_graph.add_edges_from(edge_list)
-        return merge_graph
-
-    def compute_merge(self, merge_graph):
-        merge_components = connected_components(merge_graph)
-
-        # To ensure determinism of the representative_sv
-        sorted_components = [
-            sorted(list(comp), key=lambda sv: sv.parent_id)
-            for comp in merge_components
-        ]
-
-        # To ensure determinism of the components order
-        sorted_components.sort(key=lambda comp: comp[0].parent_id)
-
-        # Define the representative SV for each connected component
+    def find_sv_clusters(self):
+        graph = self.build_consensus_graph()
+        merge_components = connected_components(graph)
+        sorted_components = [sorted(list(comp)) for comp in merge_components]
         for component_id, component in enumerate(sorted_components):
-            merge_id = f"merge_{component_id}"
-            sources = []
-            record_by_source = defaultdict(list)
+            sample2svs = defaultdict(list)
+            for callset_id, sv_id in component:
+                sv = self.callsets[callset_id].id2sv[sv_id]
+                sample2svs[self.sample_names[callset_id]].append(sv)
+            self.sv_clusters.append(SVCluster(component_id, sample2svs, self.sample_names))
 
-            max_sv = None
-            for sv in component:
-                sources.append(sv.source)
-                record_by_source[sv.source].extend(stringify_merge_rec(sv))
+    def write_vcf(self, filepath):
+        write_merge_vcf(self.callsets, self.sv_clusters, self.sample_names, SVCluster.vcf_info_fields, filepath)
+        logging.info(f"Wrote consensus VCF to {filepath}")
 
-                if not max_sv or len(max_sv.breakends) < len(sv.breakends):
-                    max_sv = sv
+    def write_stats(self, filepath):
+        stats = {
+            "n_total_variants": sum(len(c) for c in self.callsets),
+            "n_variants_in_sample": {c.sample_name: len(c) for c in self.callsets},
+            "n_clusters": len(self.sv_clusters),
+            "support_vec_types": list(set(",".join(str(v) for v in c.support_vec) for c in self.sv_clusters)),
+        }
+        if self.sv_clusters:
+           stats.update({
+               "max_cluster_size": max(c.size for c in self.sv_clusters),
+               "min_cluster_size": min(c.size for c in self.sv_clusters)}),
+        logging.info("Results:\n" + json.dumps(stats, indent=4))
+        json.dump(stats, open(filepath, "w"), indent=4)
+        logging.info(f"Wrote benchmark report to {filepath}")
 
-            stringified_recs = join_stringified_records(record_by_source)
-            support = compute_support(sources, self.ordered_sources)
-            self.merge_list.append(SVConsensus(
-                merge_id=merge_id,
-                representative_sv=max_sv,
-                stringified_recs=stringified_recs,
-                support_vec=support['supp_vec'],
-                support_count=support['supp_count'],
-                support_count_vec=support['supp_count_vec'],
-            ))
-
-    def merge(self):
-        merge_graph = self.build_merge_graph()
-        self.compute_merge(merge_graph)
+    def build_consensus_graph(self):
+        graph = nx.Graph()
+        for i, callset1 in enumerate(self.callsets):
+            graph.add_nodes_from((i, k) for k in callset1.id2sv)
+            for j, callset2 in enumerate(self.callsets[i:], start=i):
+                for sv in callset1.svs:
+                    for tid, bnd_matches in self.aligner.find_candidates(sv, callset2).items():
+                        if i == j and sv.id == tid: continue
+                        alignment = BreakpointAlignment(sv, callset2.id2sv[tid], self.aligner.align(bnd_matches))
+                        if alignment.num_unmatched() != 0: continue
+                        graph.add_edge((i, sv.id), (j, tid))
+        return graph
