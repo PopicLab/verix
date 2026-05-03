@@ -50,7 +50,6 @@ class MergeEngine:
         graph = self.build_consensus_graph()
         merge_components = connected_components(graph)
         sorted_components = [sorted(list(comp)) for comp in merge_components]
-        #sorted_components.sort()
         for component_id, component in enumerate(sorted_components):
             sample2svs = defaultdict(list)
             for callset_id, sv_id in component:
@@ -81,9 +80,10 @@ class MergeEngine:
         graph = nx.Graph()
         for i, callset1 in enumerate(self.callsets):
             graph.add_nodes_from((i, k) for k in callset1.id2sv)
-            for j, callset2 in enumerate(self.callsets[i+1:], start=i+1):
+            for j, callset2 in enumerate(self.callsets[i:], start=i):
                 for sv in callset1.svs:
                     for tid, bnd_matches in self.aligner.find_candidates(sv, callset2).items():
+                        if i == j and sv.id == tid: continue
                         alignment = BreakpointAlignment(sv, callset2.id2sv[tid], self.aligner.align(bnd_matches))
                         if alignment.num_unmatched() != 0: continue
                         graph.add_edge((i, sv.id), (j, tid))

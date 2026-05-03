@@ -13,13 +13,13 @@
 ## Overview
 `verix` is a lightweight toolkit for benchmarking and integrating complex structural variant (CSV) callsets. 
 Each CSV is represented as a set of breakpoints, and comparing two events is formulated as min-weight bipartite 
-matching between their breakpoints that (1) maximizes the number of matched breakpoint pairs and (2) minimizes the total
+matching between these breakpoint sets that (1) maximizes the number of matched breakpoint pairs and (2) minimizes the total
 distance between them. Two breakpoints are eligible to match only if they fall within a configurable distance threshold, 
 and matching can be additionally restricted to event pairs whose SV type and genotype agree. In benchmarking mode, 
 each query event is classified according to how its breakpoints line up with the target truthset, distinguishing 
 between complete reconstruction, partial capture, over-aggregation (i.e., call that collapsed multiple target events 
-into one), and total misses. To handle diverse callsets, `verix` supports multiple input VCF record 
-linking conventions to group multiple records into a single complex event. `verix` outputs annotated VCFs with 
+into one), and fully spurious calls. To handle diverse callsets, `verix` supports multiple input VCF record 
+linking conventions to group related records into a single complex event. `verix` outputs annotated VCFs with 
 per-event match details, alongside comprehensive summary statistics and diagnostic plots.
 
 
@@ -27,7 +27,7 @@ per-event match details, alongside comprehensive summary statistics and diagnost
 ### Key Functionality
 
 * `bench`: Compares a query VCF against a truth VCF and assigns each query event a match class 
-(complete, partial, aggregate, or miss). Outputs precision, recall, and F1 based on complete matches, along with 
+(complete, partial, aggregate, or spurious). Outputs precision, recall, and F1 based on complete matches, along with 
 per-class breakpoint accuracy and hit-rate metrics, an annotated VCF with detailed match information 
 (e.g. breakpoint alignment) for every event, and summary plots.
 * `consensus`: Collapses matching events from one or more VCFs (e.g., from different callers or samples) into a single 
