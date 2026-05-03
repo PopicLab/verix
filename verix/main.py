@@ -23,17 +23,18 @@ def parse_args():
                         help='Collapse breakends in a CSV within this distance into a single breakpoint')
     shared.add_argument('--enforce_type', action='store_true', help='Require SV types to match')
     shared.add_argument('--enforce_genotype', action='store_true', help='Require SV genotypes to match')
+    shared.add_argument('-f', '--formats', nargs='+', default=[], choices=[e.value for e in VCFFormat],
+                        help='Format type for each VCF (expected order for bench: query, target)')
+    shared.add_argument('-l', '--csv_links', metavar='LINK', nargs='+', default=[],
+                       help='INFO field for CSV linking in each VCF (expected order for bench: query, target)')
+    shared.add_argument('-svt', '--types', nargs='+', default=[], help='INFO field for SV type extraction (default SVTYPE)')
 
     # Benchmarking parameters
     bench = subparsers.add_parser('bench', parents=[shared], help='Compare two VCF files (query and target/truthset)',
                                   formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     bench.set_defaults(func=benchmark)
-    bench.add_argument('-p', '--query', metavar='', required=True, help='VCF file with query CSVs')
+    bench.add_argument('-q', '--query', metavar='', required=True, help='VCF file with query CSVs')
     bench.add_argument('-t', '--target', metavar='', required=True, help='VCF file with target CSVs')
-    bench.add_argument('-fq', '--format_q', required=False, default='default', choices=[e.value for e in VCFFormat], help='VCF format for query')
-    bench.add_argument('-ft', '--format_t', required=False, default='default', choices=[e.value for e in VCFFormat], help='VCF format for target')
-    bench.add_argument('-lq', '--csv_link_q', metavar='', default=None, help='INFO field for CSV linking in query VCF')
-    bench.add_argument('-lt', '--csv_link_t', metavar='', default=None, help='INFO field for CSV linking in target VCF')
     bench.add_argument('--plot', action='store_true', help='Generate benchmarking figures')
 
     # Consensus parameters
@@ -42,46 +43,56 @@ def parse_args():
     merge.set_defaults(func=consensus)
     merge.add_argument('-i', '--inputs', nargs='+', metavar='VCF', required=True, help='List of VCF files to merge')
     merge.add_argument('-n', '--names', nargs='+', metavar='NAME', default=[], help='Ordered list of names for each VCF')
-    merge.add_argument('-f', '--formats', nargs='+', required=True, choices=[e.value for e in VCFFormat], help='Format type for each VCF')
-    merge.add_argument('-csv', '--csv_links', metavar='LINK', nargs='+', default=None, help='INFO field for CSV linking in each VCF')
-    merge.add_argument('-ubt', '--unmatched_thr', metavar='', default=0, type=int, help='Max number of unmatched breakpoints allowed for a merge')
     return parser.parse_args()
 
 
 def benchmark(args):
-    if args.csv_link_q is None and args.format_q != VCFFormat.DEFAULT:
-        raise ValueError(f"--csv_link_q has to be specified if --format_q is {args.format_q}")
-    if args.csv_link_t is None and args.format_t != VCFFormat.DEFAULT:
-        raise ValueError(f"--csv_link_t has to be specified if --format_t is {args.format_t}")
-    query_svs = parse_vcf(args.query, args.format_q, args.csv_link_q, args.sizemin, args.sizemax, args.merge_thr)
-    target_svs = parse_vcf(args.target, args.format_t, args.csv_link_t, args.sizemin, args.sizemax, args.merge_thr)
+    for param_name, param in [("formats", args.formats), ("types", args.types)]:
+        if param and len(param) != 2:
+            raise ValueError(f"--{param_name} must have exactly 2 entries: query, target")
+    if args.formats and len(args.csv_links) != 2:
+        raise ValueError("--csv_links must have 2 entries when --formats is set")
+    if not args.formats and args.csv_links:
+        raise ValueError("--csv_links requires --formats to be set")
+    fq, ft = args.formats if args.formats else (VCFFormat.DEFAULT, VCFFormat.DEFAULT)
+    lq, lt = args.csv_links if args.csv_links else (None, None)
+    tq, tt = args.types if args.types else ("SVTYPE", "SVTYPE")
+    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr)
+    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr)
     logging.info(f"Loaded {len(query_svs)} query SVs")
     logging.info(f"Loaded {len(target_svs)} target/truthset SVs")
-    engine = BenchmarkEngine(query_svs, target_svs,
+    engine = BenchmarkEngine(query_svs,
+                             target_svs,
                              BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
     engine.find_matches()
     engine.write_stats(Path(args.output_dir) / "report.json")
     engine.write_vcf(Path(args.output_dir) / "matches.vcf")
     write_csv_vcf(query_svs, Path(args.output_dir) / "query.vcf")
     write_csv_vcf(target_svs, Path(args.output_dir) / "target.vcf")
-    #if args.plot:
-    #    engine.make_plots(args.output_dir / "report.pdf")) #Plotter(args.out_dir).plot()
+    if args.plot:
+        (Path(args.output_dir) / "plots").mkdir(parents=True, exist_ok=True)
+        engine.generate_plots(Path(args.output_dir) / "plots")
 
 
 def consensus(args):
-    if len(args.formats) != len(args.inputs):
-        raise ValueError(f"--formats has {len(args.formats)} entries for {len(args.inputs)} inputs")
-    if args.csv_links is not None and len(args.csv_links) != len(args.inputs):
-        raise ValueError(f"--csv_links has {len(args.csv_links)} entries for {len(args.inputs)} inputs")
-    if args.names is not None and (len(args.names) != len(set(args.names)) or len(args.names) != len(args.inputs)):
-        raise ValueError(f"--names cannot have duplicate entries and must match the length of VCF inputs")
+    n_inputs = len(args.inputs)
+    for param_name, param in [("formats", args.formats), ("types", args.types),
+                              ("csv_links", args.csv_links), ("names", args.names)]:
+        if param and len(param) != n_inputs:
+            raise ValueError(f"--{param_name} must have exactly {n_inputs} entries")
+        if param_name == "names" and len(param) != len(set(param)):
+            raise ValueError(f"--names cannot have duplicate entries")
+    if not args.formats and args.csv_links:
+        raise ValueError("--csv_links requires --formats to be set")
     logging.info(f"Parsing {len(args.inputs)} VCF files for consensus generation...")
     names = args.names or range(len(args.inputs))
-
     svs = []
     for i, vcf_path in enumerate(args.inputs):
-        svs.append(parse_vcf(vcf_path, vcf_format=args.formats[i], csv_link_name=args.csv_links[i] if args.csv_links else None,
-                        merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax, name=names[i]))
+        svs.append(parse_vcf(vcf_path,
+                             vcf_format=args.formats[i] if args.formats else VCFFormat.DEFAULT,
+                             csv_link_name=args.csv_links[i] if args.csv_links else None,
+                             type_name=args.types[i] if args.types else "SVTYPE",
+                             merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax, name=names[i]))
     engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
     engine.find_sv_clusters()
     engine.write_stats(Path(args.output_dir) / "report.json")

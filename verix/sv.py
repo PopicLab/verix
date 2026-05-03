@@ -21,10 +21,8 @@ class Breakpoint:
         return f"{self.chrom}:{self.pos}"
 
 class SV:
-    def __init__(self, svid, svtype, bkps, types, vcf_bp, genotype, sample_name, records):
+    def __init__(self, svid, svtype, bkps, genotype, sample_name, records):
         self.id = svid
-        self.types = types
-        self.vcf_bp = vcf_bp # VCF breakends
         self.genotype = genotype
         self.sample_name = sample_name  # VCF file
         self.records = records  # linked VCF records
@@ -39,8 +37,6 @@ class SV:
         return cls(
             svid=svid,
             svtype=cls.consolidate_type(types),
-            types=types,
-            vcf_bp=vcf_bp,
             bkps=cls.consolidate_breakpoints(vcf_bp, bp_merge_threshold),
             genotype=genotype,
             sample_name=sample_name,
@@ -60,13 +56,16 @@ class SV:
             else: groups.append([bp])
         return [g[len(g) // 2] for g in groups]
 
-    def get_min_size(self):
-        min_size = None
+    def get_min_max_size(self):
+        min_size, max_size = 0, 0
         for b1, b2 in zip(self.bkps, self.bkps[1:]):
             if b1.chrom != b2.chrom: continue
-            if not min_size or (b2.pos - b1.pos) < min_size:
-                min_size = b2.pos - b1.pos
-        return min_size
+            interval_len = abs(b1.pos - b2.pos)
+            if not min_size or interval_len < min_size:
+                min_size = interval_len
+            if not max_size or interval_len >= max_size:
+                max_size = interval_len
+        return min_size, max_size
 
     def breakpoints2str(self):
         return ','.join([f'{bnd.chrom}:{bnd.pos}' for bnd in self.bkps])

@@ -67,7 +67,7 @@ class MergeEngine:
             "n_total_variants": sum(len(c) for c in self.callsets),
             "n_variants_in_sample": {c.sample_name: len(c) for c in self.callsets},
             "n_clusters": len(self.sv_clusters),
-            "support_vec_types": list(set("".join(str(v) for v in c.support_vec) for c in self.sv_clusters)),
+            "support_vec_types": list(set(",".join(str(v) for v in c.support_vec) for c in self.sv_clusters)),
         }
         if self.sv_clusters:
            stats.update({

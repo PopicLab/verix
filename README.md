@@ -1,113 +1,63 @@
 # Verix: a toolkit for benchmarking and harmonization of complex structural variants
 
-**Verix** is a principled toolkit designed to benchmark, merge, and evaluate **Complex Structural Variants (CSV)** calls.
-
 ## Table of Contents
 
-* [Overview](#Overview)
-* [Key Functionality](#Key-Functionality)
-* [Installation](#Installation)
-* [Quick Start](#Quick-Start)
-* [Documentation](#Documentation)
-* [Citation](#Citation)
-* [Authors](#Authors)
+* [Overview](#overview)
+* [Key Functionality](#func)
+* [Installation](#install)
+* [Quick Start](#start)
+* [User Guide](#guide)
 
------
 
+<a name="overview"></a>
 ## Overview
-`Verix` CSV evaluation and merging tool.
-It uses a set-of-breakends matching paradigm and a graph-based algorithm designed to handle the complexity of CSVs. 
-
-In `bench` mode, `Verix` evaluates the accuracy of predicted SVs against a ground-truth dataset.
-It provides detailed performance statistics, annotated VCF/CSV files, and diagnostic plots.
-
-In `merge` mode, `Verix` consolidates redundant SV calls within or across multiple VCF files into a single consensus set.
-
-## Key Functionality
-
-  * **`bench`**: Compares a predicted call VCF `pred` against a ground-truth VCF `truth`. 
-It characterizes SV matches in several categories for a thorough diagnostic.
-  * **`merge`**: Combines complex SV callsets from a single or multiple VCF files (e.g., across different callers or samples) 
-into a representative SV relying on the connected components in an SV overlap graph.
+`verix` is a lightweight toolkit for benchmarking and integrating complex structural variant (CSV) callsets. 
+Each CSV is represented as a set of breakpoints, and comparing two events is formulated as min-weight bipartite 
+matching between their breakpoints that (1) maximizes the number of matched breakpoint pairs and (2) minimizes the total
+distance between them. Two breakpoints are eligible to match only if they fall within a configurable distance threshold, 
+and matching can be additionally restricted to event pairs whose SV type and genotype agree. In benchmarking mode, 
+each query event is classified according to how its breakpoints line up with the target truthset, distinguishing 
+between complete reconstruction, partial capture, over-aggregation (i.e., call that collapsed multiple target events 
+into one), and total misses. To handle diverse callsets, `verix` supports multiple input VCF record 
+linking conventions to group multiple records into a single complex event. `verix` outputs annotated VCFs with 
+per-event match details, alongside comprehensive summary statistics and diagnostic plots.
 
 
------
+<a name="func"></a>
+### Key Functionality
 
+* `bench`: Compares a query VCF against a truth VCF and assigns each query event a match class 
+(complete, partial, aggregate, or miss). Outputs precision, recall, and F1 based on complete matches, along with 
+per-class breakpoint accuracy and hit-rate metrics, an annotated VCF with detailed match information 
+(e.g. breakpoint alignment) for every event, and summary plots.
+* `consensus`: Collapses matching events from one or more VCFs (e.g., from different callers or samples) into a single 
+representative call. Generates an integrated VCF with per-sample support annotations and summary statistics on 
+call concordance and support patterns.
+
+<a name="install"></a>
 ## Installation
 
-1.  **Clone the repository:**
+* Clone the repository: `git clone git@github.com:PopicLab/verix`
+* Navigate into the top-level folder: `cd verix`
+* Install the framework: `pip install .`
+* Set the PYTHONPATH: `export PYTHONPATH=$PYTHONPATH:/path/to/verix/`
 
-<!-- end list -->
-
-```bash
-git clone git@github.com:PopicLab/verix
-cd verix
-```
-
-2.  **Install the package:**
-
-<!-- end list -->
-
-```bash
-pip install .
-```
-
-3.  **Set your PYTHONPATH:**
-
-<!-- end list -->
-
-```bash
-export PYTHONPATH=$PYTHONPATH:/path/to/verix/
-```
-
------
-
+<a name="start"></a>
 ## Quick Start
-* **Format your VCFs:** Ensure your VCFs follow the specifications in the [Inputs Documentation](https://www.google.com/search?q=Documentation/vcf_format.md).
-* **Run the benchmark:**
+1. Compare two VCFs: 
 
+`verix bench --query predictions.vcf --target truth.vcf --output_dir results/`
 
+Key outputs: `results/matches.vcf` with per-CSV match annotations and `results/report.json` with summary statistics. 
 
-```bash
-verix bench \
-  --pred caller_output.vcf \
-  --format_pred single_rec \
-  --truth ground_truth.vcf \
-  --format_truth multi_rec \
-  --output ./results_path/ \
-  --plot
-```
+2. Integrate multiple VCFs into a single consensus callset:
 
-* **Run the merge:**
-```bash
-verix merge \
-  --inputs vcf1.vcf vcf2.vcf vcf3.vcf\
-  --formats format1 format2 format3 \
-  --output ./results_path/ 
-```
+`verix consensus --inputs caller_a.vcf caller_b.vcf caller_c.vcf --names A B C --output_dir results/`
 
-<!-- end list -->
------
+Key outputs: `results/merged.vcf` with matching calls collapsed into one record and `results/report.json` 
+with summary statistics.
 
-## Documentation
+<a name="guide"></a>
+## User Guide
 
-For detailed information about how to use `Verix`, please refer to the following documentation:
-
-* [Methodology](Documentation/methodology.md)
-* [VCF Format](Documentation/vcf_format.md)
-* [Benchmarking](Documentation/bench.md)
-* [Benchmarking Outputs](Documentation/bench_outputs)
-* [Merge](Documentation/merge)
-* [Plotting](Documentation/plot.md)
-
------
-
-## Authors
-
-  * **Enzo Battistella** 
-  * **Chris Rohlicek** 
-  * **Tony Cui** 
-  * **Bert Huang** 
-  * **Yueyao Gao** 
-  * **Anant Maheshwari** 
-  * **Victoria Popic** 
+For detailed information about how to use `verix`, please refer to the [User Guide](docs/user_guide.md).

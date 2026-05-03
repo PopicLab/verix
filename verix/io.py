@@ -34,7 +34,7 @@ def extract_breakends(rec, svid, vcf_format, bkp_link_field):
         breakends.add((rec.info.get('TARGET_CHROM', rec.chrom), rec.info['TARGET']))
     return [Breakpoint(chrom=c, pos=p, svid=svid) for c, p in breakends]
 
-def parse_vcf(input_file, vcf_format, csv_link_name, sizemin, sizemax, merge_threshold, name=None):
+def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax, merge_threshold, name=None):
     sv_groups = {}
     made2id = {}
     # --- parse and group all CSV records
@@ -43,7 +43,7 @@ def parse_vcf(input_file, vcf_format, csv_link_name, sizemin, sizemax, merge_thr
     has_gt = 'GT' in vcf.header.formats
     for rec_idx, rec in enumerate(vcf):
         svid = rec_idx # by default, use the index in the VCF as the SV ID
-        sv_type = rec.info.get('SVTYPE', 'NA')
+        sv_type = rec.info.get(type_name, 'NA')
         genotype = next(iter(rec.samples.values()), {}).get('GT', (None, None))
         if vcf_format == VCFFormat.MULTI and csv_link_name in rec.info: # use the provided link ID
             svid = rec.info[csv_link_name]
@@ -65,7 +65,8 @@ def parse_vcf(input_file, vcf_format, csv_link_name, sizemin, sizemax, merge_thr
     svs = []
     for svid, g in sv_groups.items():
         sv = SV.from_records(svid=svid, sample_name=sample_name, bp_merge_threshold=merge_threshold, **g)
-        if sizemin <= sv.get_min_size() <= (sizemax or float('inf')): svs.append(sv)
+        min_size, max_size = sv.get_min_max_size()
+        if sizemin <= min_size and max_size <= (sizemax or float('inf')): svs.append(sv)
     if not svs and sv_groups: logging.warning(f'No SVs left after size filtering in {input_file}')
     return Callset(svs, name=sample_name, has_gt=has_gt)
 
@@ -95,6 +96,7 @@ def populate_rec(rec, sv):
 
 def write_csv_vcf(callset, vcf_path):
     header = create_base_header(callset.chrom_set, f'{__toolname__}_{__version__}')
+    header.add_line('##INFO=<ID=ID,Number=.,Type=String,Description="Unique CSV identifier">')
     if callset.has_gt:
         header.add_line('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
     if callset.sample_name:
@@ -102,6 +104,7 @@ def write_csv_vcf(callset, vcf_path):
     with VariantFile(vcf_path, 'w', header=header) as csv_vcf:
         for sv in callset.svs:
             rec = csv_vcf.new_record()
+            rec.info['ID'] = str(sv.id)
             populate_rec(rec, sv)
             if callset.has_gt: rec.samples[callset.sample_name]['GT'] = sv.genotype
             csv_vcf.write(rec)

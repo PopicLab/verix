@@ -3,9 +3,11 @@ import logging
 from collections import defaultdict
 import json
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from typing import Any
 
+from verix.plot import BenchPlotter
 from verix.sv import *
 from verix.io import write_bench_vcf
 
@@ -14,7 +16,7 @@ class MatchType(str, Enum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     AGGREGATE = "aggregate"
-    MISS = "miss"
+    SPURIOUS = "spurious"
 
 class MatchAnnotation:
     def __init__(self, sv):
@@ -32,7 +34,7 @@ class MatchAnnotation:
 
     def classify(self):
         if self.optimal is None:
-            self.match_class = MatchType.MISS
+            self.match_class = MatchType.SPURIOUS
             self.spurious = len(self.sv.bkps)
             return
         if self.optimal.num_unmatched() == 0:
@@ -49,7 +51,7 @@ class MatchAnnotation:
         self.spurious = sum(1 for b in self.sv.bkps if b not in (bnd_in_other | bnd_in_opt))
 
     def to_vcf_info_dict(self):
-        info = {'BEST_MATCH_CLASS': self.match_class.name}
+        info = {'BEST_MATCH_CLASS': self.match_class.value}
         if self.spurious: info['SPURIOUS'] = self.spurious
         if self.fragmented: info['FRAGMENTED'] = self.fragmented
         if self.optimal:
@@ -62,8 +64,15 @@ class MatchAnnotation:
             info['MATCHES'] = "|".join(f'{aln.sv_target.id},{aln.sv_target.type},{str(aln)}' for aln in self.alignments)
         return info
 
+    def to_stats_info_dict(self):
+        info = self.to_vcf_info_dict()
+        info.update(QID=self.sv.id, QTYPE=self.sv.type, QNBKPS=len(self.sv.bkps),
+                    TNBKPS=len(self.optimal.sv_target.bkps) if self.optimal else None,
+                    NTARGETS=len({aln.sv_target.id for aln in self.alignments}))
+        return info
+
     vcf_info_fields = {
-        'BEST_MATCH_CLASS': ('1', 'String', 'Match classification: complete | partial | aggregate | miss'),
+        'BEST_MATCH_CLASS': ('1', 'String', 'Match classification: complete | partial | aggregate | spurious'),
         'BEST_MATCH_ID': ('1', 'String', 'ID of the best matching target event'),
         'BEST_MATCH_COV': ('1', 'String', 'full iff all target event breakpoints are covered, else partial'),
         'BEST_MATCH_TYPE': ('1', 'String', 'SV type of the best matching target event'),
@@ -73,6 +82,7 @@ class MatchAnnotation:
         'SPURIOUS': ('1', 'Integer', 'Number of query breakpoints that match no target event'),
         'FRAGMENTED': ('0', 'Flag', 'Best target match was covered by other query calls'),
     }
+    stats_info_fields = list(vcf_info_fields.keys()) + ["QID", "QTYPE", "QNBKPS", "TNBKPS", "NTARGETS"]
 
 class BenchmarkEngine:
     # Compares a query SV callset against a target truthset
@@ -81,32 +91,34 @@ class BenchmarkEngine:
         self.target = target
         self.matches = {sv.id: MatchAnnotation(sv) for sv in query.svs}
         self.aligner = aligner
+        self.target_matches = defaultdict(set)
+
+    def get_match(self, svid):
+        return self.matches[svid]
 
     def find_matches(self):
         logging.info("Finding matches...")
         for sv in tqdm(self.query.svs):
-            self.match_to_gt(sv)
+            self.match_to_target(sv)
         self.global_annotation()
 
-    def match_to_gt(self, sv):
+    def match_to_target(self, sv):
         match = self.matches[sv.id]
         # 1. find candidate matches in target truthset
         candidates = self.aligner.find_candidates(sv, self.target)
         # 2. compute candidate alignments
         for target_id, bp_matches in candidates.items():
-            match.add_alignment(BreakpointAlignment(sv, self.target.id2sv[target_id], self.aligner.align(bp_matches)))
+            aln = BreakpointAlignment(sv, self.target.id2sv[target_id], self.aligner.align(bp_matches))
+            match.add_alignment(aln)
+            self.target_matches[target_id].update(aln.assignment.values())
         # 3. classify the match based on optimal alignments + other matches
         match.classify()
 
     def global_annotation(self):
-        matched_bnd_gt = defaultdict(set)
         for match in self.matches.values():
-            if match.match_class in [MatchType.MISS, MatchType.COMPLETE]: continue
-            matched_bnd_gt[match.optimal.sv_target.id].update(match.optimal.assignment.values())
-        for match in self.matches.values():
-            if match.match_class in [MatchType.MISS, MatchType.COMPLETE]: continue
+            if match.match_class in [MatchType.SPURIOUS, MatchType.COMPLETE]: continue
             optimal = set(match.optimal.assignment.values())
-            extra_matches = matched_bnd_gt[match.optimal.sv_target.id] - optimal
+            extra_matches = self.target_matches[match.optimal.sv_target.id] - optimal
             if extra_matches:
                 match.fragmented = True
 
@@ -122,21 +134,21 @@ class BenchmarkEngine:
             # ---- TP, FN, FP for complete matches
             tp = sum(1 for m in matches if m.match_class == MatchType.COMPLETE)
             fp = n_query - tp
-            fn = n_target - len({m.optimal.sv_target.id for m in matches if m.match_class == MatchType.COMPLETE})
+            fn = n_target - tp
 
             # ---- per-class stats
             class2matches = {cls: [m for m in matches if m.match_class == cls] for cls in MatchType}
             stats_by_class = {}
             for cls in MatchType:
-                if cls in [MatchType.MISS]: continue
+                if cls in [MatchType.SPURIOUS]: continue
                 if not class2matches[cls]: continue
                 cls_matches = class2matches[cls]
                 stats_by_class[cls] = {
-                    "n": len(cls_matches),
-                    "mean_breakpoint_accuracy": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
+                    "num_matches": len(cls_matches),
+                    "mean_breakpoint_distance": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
                     "mean_breakpoint_hit_rate": float(np.mean([m.optimal.num_matched / len(m.optimal.sv_target.bkps) for m in cls_matches])),
                     "mean_spurious_breakpoint_rate": float(np.mean([m.spurious / len(m.sv.bkps) for m in cls_matches])),
-                    "mean_gt_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
+                    "mean_targets_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
                 }
             stats.update(tp=tp,
                          fp=fp,
@@ -144,9 +156,9 @@ class BenchmarkEngine:
                          precision=tp / (tp + fp),
                          recall=tp / (tp + fn),
                          f1=2*tp/(2*tp + fp + fn),
-                         class_proportions={cls.name: len(class2matches[cls])/n_query for cls in MatchType},
+                         class_proportions={cls.value: len(class2matches[cls])/n_query for cls in MatchType},
                          by_class={
-                              cls.name: stats_by_class[cls]
+                              cls.value: stats_by_class[cls]
                               for cls in (MatchType.COMPLETE, MatchType.PARTIAL, MatchType.AGGREGATE)
                               if cls in stats_by_class})
         logging.info("Results:\n" + json.dumps(stats, indent=4))
@@ -156,3 +168,20 @@ class BenchmarkEngine:
     def write_vcf(self, filepath):
         write_bench_vcf(self.query, self.matches.values(), MatchAnnotation.vcf_info_fields, filepath)
         logging.info(f"Wrote benchmark VCF to {filepath}")
+
+    def generate_plots(self, filepath):
+        match_df = pd.DataFrame([m.to_stats_info_dict() for m in self.matches.values()],
+                          columns=MatchAnnotation.stats_info_fields)
+        target_hits = {m.optimal.sv_target.id: m.optimal.coverage()
+                       for m in self.matches.values() if m.match_class != MatchType.SPURIOUS}
+        target_df = pd.DataFrame([
+            {"ID": str(s.id), "TYPE": s.type, "COV": target_hits.get(s.id, "miss"), "NBP": len(s.bkps),
+             "UNION_COV": "miss" if s.id not in self.target_matches else \
+                 "full" if len(self.target_matches[s.id]) == len(s.bkps) else "partial"}
+            for s in self.target.svs])
+        plotter = BenchPlotter(filepath, match_df, target_df)
+        plotter.make_plots()
+        logging.info(f"Generated plots in: {filepath}")
+
+
+
