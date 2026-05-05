@@ -1,6 +1,6 @@
 from enum import Enum
 import logging
-from collections import defaultdict
+from collections import defaultdict, Counter
 import json
 import numpy as np
 import pandas as pd
@@ -131,32 +131,49 @@ class BenchmarkEngine:
         }
         if n_query and n_target:
             matches = self.matches.values()
-            # ---- TP, FN, FP for complete matches
-            tp = sum(1 for m in matches if m.match_class == MatchType.COMPLETE)
-            fp = n_query - tp
-            fn = n_target - tp
+
 
             # ---- per-class stats
-            class2matches = {cls: [m for m in matches if m.match_class == cls] for cls in MatchType}
+            class2query = {cls: [m for m in matches if m.match_class == cls] for cls in MatchType}
+            class2targets = {cls: {m.optimal.sv_target for m in ms}
+                             for cls, ms in class2query.items() if cls != MatchType.SPURIOUS}
+            query_type_totals = Counter(s.type for s in self.query.svs)
+            target_type_totals = Counter(s.type for s in self.target.svs)
+            # ---- TP, FN, FP for complete matches
+            tp_query = len(class2query[MatchType.COMPLETE])
+            tp_target = len(class2targets.get(MatchType.COMPLETE, set()))
+            fp = n_query - tp_query
+            fn = n_target - tp_target
+            precision = tp_query / n_query
+            recall = tp_target / (tp_target + fn)
+
             stats_by_class = {}
-            for cls in MatchType:
+            for cls in class2query:
                 if cls in [MatchType.SPURIOUS]: continue
-                if not class2matches[cls]: continue
-                cls_matches = class2matches[cls]
+                if not class2query[cls]: continue
+                cls_matches = class2query[cls]
+                cls_targets = class2targets[cls]
+                qtype_counts = Counter(m.sv.type for m in cls_matches)
+                ttype_counts = Counter(s.type for s in cls_targets)
                 stats_by_class[cls] = {
                     "num_matches": len(cls_matches),
                     "mean_breakpoint_distance": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
                     "mean_breakpoint_hit_rate": float(np.mean([m.optimal.num_matched / len(m.optimal.sv_target.bkps) for m in cls_matches])),
                     "mean_spurious_breakpoint_rate": float(np.mean([m.spurious / len(m.sv.bkps) for m in cls_matches])),
                     "mean_targets_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
+                    "query_type_counts": dict(qtype_counts.most_common()),
+                    "query_type_proportions": {t: c / query_type_totals[t] for t, c in qtype_counts.most_common()},
+                    "target_type_counts": dict(ttype_counts.most_common()),
+                    "target_type_proportions": {t: c / target_type_totals[t] for t, c in ttype_counts.most_common()},
                 }
-            stats.update(tp=tp,
+            stats.update(tp_query=tp_query,
+                         tp_target=tp_target,
                          fp=fp,
                          fn=fn,
-                         precision=tp / (tp + fp),
-                         recall=tp / (tp + fn),
-                         f1=2*tp/(2*tp + fp + fn),
-                         class_proportions={cls.value: len(class2matches[cls])/n_query for cls in MatchType},
+                         precision=precision,
+                         recall=recall,
+                         f1=2 * precision * recall / (precision + recall),
+                         class_proportions={cls.value: len(class2query[cls])/n_query for cls in MatchType},
                          by_class={
                               cls.value: stats_by_class[cls]
                               for cls in (MatchType.COMPLETE, MatchType.PARTIAL, MatchType.AGGREGATE)
