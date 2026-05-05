@@ -178,15 +178,18 @@ A report with various summary statistics, including:
 
 - `n_query`: number of query SVs after parsing and size filtering
 - `n_target`: number of target SVs after parsing and size filtering  
-- `tp`, `fp`, `fn`, `precision`, `recall`, `f1`; note: only `complete` matches count as TP  
+- `tp-query`, `tp-target`, `fp`, `fn`, `precision`, `recall`, `f1`; note: only `complete` matches count as TP 
 - `class_proportions`: shows the fraction of query events in each match category
 - `by_class` maps each non-spurious match category to metrics computed over the optimal alignment of each query in this category:
-  - `n`: number of query records 
-  - `mean_breakpoint_distance`: mean per-breakpoint distance
+  - `num_matches`: number of query records 
+  - `mean_breakpoint_distance`: mean per-breakpoint distance 
   - `mean_breakpoint_hit_rate`: mean fraction of target breakpoints matched 
-  - `mean_spurious_breakpoint_rate`: mean fraction of query breakpoints that matched no target
-  - `mean_targets_per_record`: mean number of distinct target events appearing in the candidate alignments of each query
-
+  - `mean_spurious_breakpoint_rate`: mean fraction of query breakpoints that matched no target 
+  - `mean_targets_per_record`: mean number of distinct target events appearing in the candidate alignments of each query 
+  - `query_type_counts`: count of query records in this category broken down by predicted SV type 
+  - `query_type_proportions`: per SV type, the fraction of all query records of that type that fell into this category 
+  - `target_type_counts`: count of unique target events in this category broken down by truthset SV type 
+  - `target_type_proportions`: per SV type, the fraction of all target events of that type that fell into this category 
 <a name="benchplots"></a>
 ##### Plots
 

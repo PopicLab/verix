@@ -8,11 +8,16 @@ include = ["verix*"]
 [project]
 name = "verix"
 version = "0.0.2"
-description = "A benchmarking and plotting tool for Complex SV callers evaluation"
+description = "A framework for complex SV benchmarking and harmonization"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "pysam", "pandas", "plotnine", "seaborn", "plotly", "networkx", "kaleido"
+    "networkx",
+    "numpy",
+    "pandas",
+    "plotnine",
+    "pysam",
+    "tqdm",
 ]
 
 [project.scripts]
