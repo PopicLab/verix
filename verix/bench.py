@@ -122,62 +122,61 @@ class BenchmarkEngine:
             if extra_matches:
                 match.fragmented = True
 
-    def write_stats(self, filepath):
+    def compute_stats(self):
         n_query = len(self.query.svs)
         n_target = len(self.target.svs)
         stats: dict[str, Any] = {
             "n_query": n_query,
             "n_target": n_target,
         }
-        if n_query and n_target:
-            matches = self.matches.values()
+        matches = self.matches.values()
+        # ---- per-class stats
+        class2query = {cls: [m for m in matches if m.match_class == cls] for cls in MatchType}
+        class2targets = {cls: {m.optimal.sv_target for m in ms}
+                         for cls, ms in class2query.items() if cls != MatchType.SPURIOUS}
+        query_type_totals = Counter(s.type for s in self.query.svs)
+        target_type_totals = Counter(s.type for s in self.target.svs)
 
-
-            # ---- per-class stats
-            class2query = {cls: [m for m in matches if m.match_class == cls] for cls in MatchType}
-            class2targets = {cls: {m.optimal.sv_target for m in ms}
-                             for cls, ms in class2query.items() if cls != MatchType.SPURIOUS}
-            query_type_totals = Counter(s.type for s in self.query.svs)
-            target_type_totals = Counter(s.type for s in self.target.svs)
-            # ---- TP, FN, FP for complete matches
+        # ---- TP, FN, FP for complete matches
+        if class2query[MatchType.COMPLETE]:
             tp_query = len(class2query[MatchType.COMPLETE])
-            tp_target = len(class2targets.get(MatchType.COMPLETE, set()))
+            tp_target = len(class2targets[MatchType.COMPLETE])
             fp = n_query - tp_query
             fn = n_target - tp_target
             precision = tp_query / n_query
-            recall = tp_target / (tp_target + fn)
+            recall = tp_target / n_target
+            stats.update(tp_query=tp_query, tp_target=tp_target, fp=fp, fn=fn,
+                         precision=precision, recall=recall,
+                         f1=2 * precision * recall / (precision + recall))
 
-            stats_by_class = {}
-            for cls in class2query:
-                if cls in [MatchType.SPURIOUS]: continue
-                if not class2query[cls]: continue
-                cls_matches = class2query[cls]
-                cls_targets = class2targets[cls]
-                qtype_counts = Counter(m.sv.type for m in cls_matches)
-                ttype_counts = Counter(s.type for s in cls_targets)
-                stats_by_class[cls] = {
-                    "num_matches": len(cls_matches),
-                    "mean_breakpoint_distance": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
-                    "mean_breakpoint_hit_rate": float(np.mean([m.optimal.num_matched / len(m.optimal.sv_target.bkps) for m in cls_matches])),
-                    "mean_spurious_breakpoint_rate": float(np.mean([m.spurious / len(m.sv.bkps) for m in cls_matches])),
-                    "mean_targets_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
-                    "query_type_counts": dict(qtype_counts.most_common()),
-                    "query_type_proportions": {t: c / query_type_totals[t] for t, c in qtype_counts.most_common()},
-                    "target_type_counts": dict(ttype_counts.most_common()),
-                    "target_type_proportions": {t: c / target_type_totals[t] for t, c in ttype_counts.most_common()},
-                }
-            stats.update(tp_query=tp_query,
-                         tp_target=tp_target,
-                         fp=fp,
-                         fn=fn,
-                         precision=precision,
-                         recall=recall,
-                         f1=2 * precision * recall / (precision + recall),
-                         class_proportions={cls.value: len(class2query[cls])/n_query for cls in MatchType},
-                         by_class={
-                              cls.value: stats_by_class[cls]
-                              for cls in (MatchType.COMPLETE, MatchType.PARTIAL, MatchType.AGGREGATE)
-                              if cls in stats_by_class})
+        stats_by_class = {}
+        for cls in class2query:
+            if cls in [MatchType.SPURIOUS]: continue
+            if not class2query[cls]: continue
+            cls_matches = class2query[cls]
+            cls_targets = class2targets[cls]
+            qtype_counts = Counter(m.sv.type for m in cls_matches)
+            ttype_counts = Counter(s.type for s in cls_targets)
+            stats_by_class[cls] = {
+                "num_matches": len(cls_matches),
+                "num_unique_targets": len(cls_targets),
+                "mean_breakpoint_distance": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
+                "mean_breakpoint_hit_rate": float(np.mean([m.optimal.num_matched / len(m.optimal.sv_target.bkps) for m in cls_matches])),
+                "mean_spurious_breakpoint_rate": float(np.mean([m.spurious / len(m.sv.bkps) for m in cls_matches])),
+                "mean_targets_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
+                "query_type_counts": dict(qtype_counts.most_common()),
+                "query_type_proportions": {t: c / query_type_totals[t] for t, c in qtype_counts.most_common()},
+                "target_type_counts": dict(ttype_counts.most_common()),
+                "target_type_proportions": {t: c / target_type_totals[t] for t, c in ttype_counts.most_common()},
+            }
+        stats["class_proportions"] = {cls.value: len(class2query[cls]) / n_query for cls in MatchType}
+        stats["by_class"] = {cls.value: stats_by_class[cls]
+                             for cls in (MatchType.COMPLETE, MatchType.PARTIAL, MatchType.AGGREGATE)
+                             if cls in stats_by_class}
+        return stats
+
+    def write_stats(self, filepath):
+        stats = self.compute_stats()
         logging.info("Results:\n" + json.dumps(stats, indent=4))
         json.dump(stats, open(filepath, "w"), indent=4)
         logging.info(f"Wrote benchmark report to {filepath}")
@@ -196,7 +195,7 @@ class BenchmarkEngine:
              "UNION_COV": "miss" if s.id not in self.target_matches else \
                  "full" if len(self.target_matches[s.id]) == len(s.bkps) else "partial"}
             for s in self.target.svs])
-        plotter = BenchPlotter(filepath, match_df, target_df)
+        plotter = BenchPlotter(filepath, match_df, target_df, self.compute_stats())
         plotter.make_plots()
         logging.info(f"Generated plots in: {filepath}")
 

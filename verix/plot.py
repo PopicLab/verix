@@ -19,10 +19,11 @@ class BenchPlotter:
         'miss': '#A04545',  # muted brick red
     }
 
-    def __init__(self, out_dir, match_df, target_df):
+    def __init__(self, out_dir, match_df, target_df, stats):
         self.out_dir = out_dir
         self.match_df = match_df
         self.target_df = target_df
+        self.stats = stats
         self.n_query_types = self.match_df["QTYPE"].nunique()
         self.n_target_types = self.target_df["TYPE"].nunique()
         self.n_match_types =  self.match_df["BEST_MATCH_TYPE"].nunique()
@@ -183,6 +184,42 @@ class BenchPlotter:
                 + labs(title="Query versus target SV type correspondence for optimal matches",
                        x="Target SV type", y="Query SV type"))
 
+    def plot_summary(self):
+        s = self.stats
+        classes = [c for c in ("complete", "partial", "aggregate") if c in s.get("by_class", {})]
+        fields = ["tp_query", "tp_target", "fp", "fn", "precision", "recall", "f1"]
+        headline_lines = [f"{t}: {s[t]:.3f}" if isinstance(s[t], float) else f"{t}: {s[t]}"
+                          for t in fields]
+        fig = plt.figure(figsize=(12, 2.5 + 2.5 * len(classes)))
+        gs = fig.add_gridspec(len(classes) + 1, 3, height_ratios=[1.2] + [1] * len(classes), hspace=0.6, wspace=0.3)
+        ax_head = fig.add_subplot(gs[0, :])
+        ax_head.axis("off")
+        ax_head.set_title(f"Benchmark summary: n_query={s['n_query']}, n_target={s['n_target']}",
+                          fontsize=16, fontweight="bold", pad=12)
+        ax_head.text(0.2, 0.4, "\n".join(headline_lines),
+                     ha="left", va="center", fontsize=13, family="monospace",
+                     transform=ax_head.transAxes)
+
+        for row, cls in enumerate(classes, start=1):
+            cs = s["by_class"][cls]
+            color = self.MATCH_COLORS[cls]
+            ax_label = fig.add_subplot(gs[row, 0])
+            ax_label.axis("off")
+            ax_label.text(0.5, 0.85, cls.upper(), ha="center", va="top",
+                          fontsize=15, fontweight="bold", color=color, transform=ax_label.transAxes)
+            ax_label.text(0.5, 0.45,
+                          f"num_matches:{cs['num_matches']}\nunique_targets:{cs['num_unique_targets']}",
+                          ha="center", va="center", fontsize=12, family="monospace",
+                          transform=ax_label.transAxes)
+            for col, key in [(1, "query_type_counts"), (2, "target_type_counts")]:
+                ax = fig.add_subplot(gs[row, col])
+                items = list(cs[key].items())[::-1]
+                ax.barh([k for k, _ in items], [v for _, v in items], color=color)
+                ax.set_title(key, fontsize=12)
+                ax.tick_params(labelsize=10)
+
+        return fig
+
     def make_plots(self):
         plots = {
             "optimal_match_category_by_type": self.plot_match_category_by_type(),
@@ -196,6 +233,9 @@ class BenchPlotter:
             "optimal_type_correspondence": self.plot_optimal_type_correspondence(),
         }
         with PdfPages(self.out_dir / f"report.pdf") as pdf:
+            summary = self.plot_summary()
+            pdf.savefig(summary, bbox_inches="tight")
+            plt.close(summary)
             for name, p in plots.items():
                 fig = p.draw()
                 pdf.savefig(fig, bbox_inches="tight")
