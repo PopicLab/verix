@@ -4,19 +4,19 @@ from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
 import warnings
 warnings.filterwarnings("ignore", message="divide by zero encountered in log10", category=RuntimeWarning)
-
+plt.rcParams["svg.fonttype"] = "none"
 
 class BenchPlotter:
     MATCH_COLORS = {
-        "complete":  '#1B5E3F',  # dark green
-        "partial":   '#B8956A',  # warm tan
-        "aggregate": '#B5A8D1',  # soft lavender
-        "spurious":  '#6B1F2E',  # dark wine
+        "complete":  '#3E8F6E',
+        "partial":   '#B8956A',
+        "aggregate": '#B5A8D1',
+        "spurious":  '#6B1F2E',
     }
     TARGET_COLORS = {
-        'full': '#5A8F5A',  # muted sage green
-        'partial': '#D4A84A',  # soft amber
-        'miss': '#A04545',  # muted brick red
+        'full': '#5A8F5A',
+        'partial': '#D4A84A',
+        'miss': '#A04545',
     }
 
     def __init__(self, out_dir, match_df, target_df, stats):
@@ -83,7 +83,7 @@ class BenchPlotter:
                 + scale_x_continuous(breaks=range(0, int(df["BEST_N_MATCHED"].max()) + 1), minor_breaks=[])
                 + facet_grid("BEST_MATCH_TYPE~BEST_MATCH_CLASS")
                 + labs(title="Target breakpoints matched by target SV type",
-                       x="Number of records", y="Number of target breakpoints matched")
+                       x="Number of target breakpoints matched", y="Count")
                 + theme(axis_text_x=element_text(rotation=0, ha="right")))
 
     # how many query events are in each match category, stratified by query type
@@ -103,12 +103,14 @@ class BenchPlotter:
         df = df[df["BEST_MATCH_CLASS"] != "spurious"]
         return (
                 ggplot(df, aes(x="NTARGETS"))
-                + self.base_theme(figure_size=(self.scale_dim(self.n_match_types), self.scale_dim(self.n_query_types)))
+                + self.base_theme(figure_size=(self.scale_dim(self.n_match_types, extra=3),
+                                               self.scale_dim(self.n_query_types)))
                 + geom_bar(aes(fill="..x.."), color="white", show_legend=False)
                 + scale_fill_gradientn(colors=["#1B7837", "#A50F15"])
                 + scale_y_log10(minor_breaks=[])
                 + scale_x_continuous(breaks=range(0, int(df["NTARGETS"].max()) + 1), minor_breaks=[])
                 + facet_grid("QTYPE~BEST_MATCH_CLASS")
+                + theme(axis_text_x=element_text(rotation=90, ha="right", size=8))
                 + labs(title="Distinct targets matched per query record",
                        x="Number of distinct targets in candidate alignments",
                        y="Number of query records"))
@@ -158,10 +160,10 @@ class BenchPlotter:
         df = self.match_df.dropna(subset=["BEST_MATCH_TYPE"])
         counts = (df.groupby(["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"], observed=True)
                   .size().reset_index(name="n"))
-        all_types = sorted(set(self.match_df["QTYPE"].dropna().unique())
-                           | set(self.match_df["BEST_MATCH_TYPE"].dropna().unique()))
+        query_types = sorted(self.match_df["QTYPE"].dropna().unique())
+        target_types = sorted(self.match_df["BEST_MATCH_TYPE"].dropna().unique())
         full_index = pd.MultiIndex.from_product(
-            [counts["BEST_MATCH_CLASS"].unique(), all_types, all_types],
+            [counts["BEST_MATCH_CLASS"].unique(), query_types, target_types],
             names=["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"])
         counts = (counts.set_index(["BEST_MATCH_CLASS", "QTYPE", "BEST_MATCH_TYPE"])
                   .reindex(full_index, fill_value=0).reset_index())
@@ -169,8 +171,8 @@ class BenchPlotter:
         return (
                 ggplot(counts, aes(x="BEST_MATCH_TYPE", y="QTYPE", fill="n"))
                 + theme_minimal()
-                + theme(figure_size=(max(6.0, 0.4 * len(all_types) + 2.0),
-                                     max(4, 0.4 * len(all_types) * n_facets + 2)),
+                + theme(figure_size=(max(6.0, 0.4 * len(target_types) + 2.0),
+                                     max(4, 0.4 * len(query_types) * n_facets + 2)),
                         axis_text_x=element_text(rotation=45, ha="right"),
                         strip_text=element_text(size=14),
                         panel_border=element_rect(color="black", size=1, fill=None),
@@ -181,23 +183,23 @@ class BenchPlotter:
                 + geom_tile(color="white", size=0.4)
                 + geom_text(aes(label="n"), data=counts[counts["n"] > 0], size=8)
                 + scale_fill_gradient(low="#f7f7f7", high="#1f77b4", name="Count")
-                + labs(title="Query versus target SV type correspondence for optimal matches",
-                       x="Target SV type", y="Query SV type"))
+                + labs(title="Predicted versus true SV type correspondence for optimal matches",
+                       x="True SV type", y="Predicted SV type"))
 
     def plot_summary(self):
         s = self.stats
         classes = [c for c in ("complete", "partial", "aggregate") if c in s.get("by_class", {})]
         fields = ["tp_query", "tp_target", "fp", "fn", "precision", "recall", "f1"]
-        headline_lines = [f"{t}: {s[t]:.3f}" if isinstance(s[t], float) else f"{t}: {s[t]}"
-                          for t in fields]
+        headline_lines = [f"{t}: {s[t]:.3f}" if t in s and isinstance(s[t], float) else f"{t}: {s[t]}"
+                          for t in fields if t in s]
         fig = plt.figure(figsize=(12, 2.5 + 2.5 * len(classes)))
-        gs = fig.add_gridspec(len(classes) + 1, 3, height_ratios=[1.2] + [1] * len(classes), hspace=0.6, wspace=0.3)
+        gs = fig.add_gridspec(len(classes) + 1, 3, height_ratios=[1.2] + [1] * len(classes),
+                              hspace=0.6, wspace=0.5)
         ax_head = fig.add_subplot(gs[0, :])
         ax_head.axis("off")
         ax_head.set_title(f"Benchmark summary: n_query={s['n_query']}, n_target={s['n_target']}",
                           fontsize=16, fontweight="bold", pad=12)
-        ax_head.text(0.2, 0.4, "\n".join(headline_lines),
-                     ha="left", va="center", fontsize=13, family="monospace",
+        ax_head.text(0.3, 0.4, "\n".join(headline_lines), ha="left", va="center", fontsize=13,
                      transform=ax_head.transAxes)
 
         for row, cls in enumerate(classes, start=1):
@@ -205,19 +207,37 @@ class BenchPlotter:
             color = self.MATCH_COLORS[cls]
             ax_label = fig.add_subplot(gs[row, 0])
             ax_label.axis("off")
-            ax_label.text(0.5, 0.85, cls.upper(), ha="center", va="top",
+            ax_label.text(0.3, 0.85, cls.upper(), ha="center", va="top",
                           fontsize=15, fontweight="bold", color=color, transform=ax_label.transAxes)
-            ax_label.text(0.5, 0.45,
+            ax_label.text(0.3, 0.45,
                           f"num_matches:{cs['num_matches']}\nunique_targets:{cs['num_unique_targets']}",
                           ha="center", va="center", fontsize=12, family="monospace",
                           transform=ax_label.transAxes)
-            for col, key in [(1, "query_type_counts"), (2, "target_type_counts")]:
+            for col, key_count, key_frac in [(1, "query_type_counts", "query_type_proportions"),
+                                             (2, "target_type_counts", "target_type_proportions")]:
                 ax = fig.add_subplot(gs[row, col])
-                items = list(cs[key].items())[::-1]
-                ax.barh([k for k, _ in items], [v for _, v in items], color=color)
-                ax.set_title(key, fontsize=12)
+                items = list(cs[key_count].items())[::-1]
+                labels = [k if len(k) <= 12 else k[:11] + "…" for k, _ in items]
+                values = [v for _, v in items]
+                bars = ax.barh(labels, values, color=color)
+                ax.set_title(key_count, fontsize=12)
                 ax.tick_params(labelsize=10)
-
+                if values:
+                    if max(values) > 1000:
+                        ax.set_xscale("log")
+                        ax.set_xlim(0.08, max(values) * 3)
+                    else:
+                        ax.set_xlim(0, max(values) * 1.2)
+                for bar, v, frac in zip(bars, values, list(cs[key_frac].values())[::-1]):
+                    bw = bar.get_width()
+                    if bw > max(values) * 0.2:
+                        ax.text(bw - max(values) * 0.01, bar.get_y() + bar.get_height() / 2,
+                                f"{100 * frac:.1f}%", va="center", ha="right", fontsize=9, color="black",
+                                fontweight="bold")
+                    else:
+                        ax.text(bw + max(values) * 0.01, bar.get_y() + bar.get_height() / 2,
+                                f"{100 * frac:.1f}%", va="center", ha="left", fontsize=9, color="black",
+                                fontweight="bold")
         return fig
 
     def make_plots(self):
