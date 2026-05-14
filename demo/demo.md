@@ -98,7 +98,7 @@ The contents of `demo/test_bench_multi/report.json` should match:
 The same truthset can be parsed with different conventions on each side to illustrate 
 how CSV assembly affects evaluation. Here the query is parsed in multi-record mode 
 (CSVs aggregated by SVID), while the target is parsed using default mode 
-(pairs of records linked via the standard POS/END/BND notation and TARGET for single dispersion loci). 
+(CSV breakpoints assembled via the standard POS/END/BND notation and TARGET INFO field for single dispersion loci). 
 
 In this scenario, DELs, dDUPs, and DUP_INVs are assembled identically under both modes, 
 but INVdel and delINVdel are split into multiple smaller target events. 
