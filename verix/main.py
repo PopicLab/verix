@@ -19,7 +19,7 @@ def parse_args():
     shared.add_argument('-d', '--match_thr', metavar='', default=500, type=int, help='Max distance between matching breakpoints')
     shared.add_argument('-s', '--sizemin', metavar='', default=0, type=int, help='Minimum SV interval size')
     shared.add_argument('-S', '--sizemax', metavar='', default=None, type=int, help='Maximum SV interval size')
-    shared.add_argument('-b', '--merge_thr', metavar='', default=1, type=int,
+    shared.add_argument('-b', '--merge_thr', metavar='', default=2, type=int,
                         help='Collapse breakends in a CSV within this distance into a single breakpoint')
     shared.add_argument('--enforce_type', action='store_true', help='Require SV types to match')
     shared.add_argument('--enforce_genotype', action='store_true', help='Require SV genotypes to match')

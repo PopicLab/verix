@@ -51,8 +51,7 @@ class MatchAnnotation:
         self.spurious = sum(1 for b in self.sv.bkps if b not in (bnd_in_other | bnd_in_opt))
 
     def to_vcf_info_dict(self):
-        info = {'BEST_MATCH_CLASS': self.match_class.value}
-        if self.spurious: info['SPURIOUS'] = self.spurious
+        info = {'BEST_MATCH_CLASS': self.match_class.value, 'SPURIOUS': self.spurious}
         if self.fragmented: info['FRAGMENTED'] = self.fragmented
         if self.optimal:
             info['BEST_MATCH_ID'] = str(self.optimal.sv_target.id)
@@ -60,6 +59,7 @@ class MatchAnnotation:
             info['BEST_MATCH_TYPE'] = self.optimal.sv_target.type
             info['BEST_N_MATCHED'] = self.optimal.num_matched
             info['BEST_BND_DIST'] = self.optimal.distance
+            info['BEST_IS_CONTIGUOUS'] = self.optimal.contiguous(side="target")
         if self.alignments:
             info['MATCHES'] = "|".join(f'{aln.sv_target.id},{aln.sv_target.type},{str(aln)}' for aln in self.alignments)
         return info
@@ -74,13 +74,14 @@ class MatchAnnotation:
     vcf_info_fields = {
         'BEST_MATCH_CLASS': ('1', 'String', 'Match classification: complete | partial | aggregate | spurious'),
         'BEST_MATCH_ID': ('1', 'String', 'ID of the best matching target event'),
-        'BEST_MATCH_COV': ('1', 'String', 'full iff all target event breakpoints are covered, else partial'),
+        'BEST_MATCH_COV': ('1', 'String', 'full iff all the breakpoints of the best target are matched, else partial'),
         'BEST_MATCH_TYPE': ('1', 'String', 'SV type of the best matching target event'),
         'BEST_N_MATCHED': ('1', 'Integer', 'Number of breakpoints matched in the best alignment'),
         'BEST_BND_DIST': ('1', 'Integer', 'Total breakpoints distance in the best alignment'),
+        'BEST_IS_CONTIGUOUS': ('0', 'Flag', 'Set if the best target breakpoints were matched contiguously (applies to >1 match per chromosome only)'),
         'MATCHES': ('.', 'String', 'All candidate alignments'),
         'SPURIOUS': ('1', 'Integer', 'Number of query breakpoints that match no target event'),
-        'FRAGMENTED': ('0', 'Flag', 'Best target match was covered by other query calls'),
+        'FRAGMENTED': ('0', 'Flag', 'Set if best target match was covered by other query calls'),
     }
     stats_info_fields = list(vcf_info_fields.keys()) + ["QID", "QTYPE", "QNBKPS", "TNBKPS", "NTARGETS"]
 
@@ -157,13 +158,19 @@ class BenchmarkEngine:
             cls_targets = class2targets[cls]
             qtype_counts = Counter(m.sv.type for m in cls_matches)
             ttype_counts = Counter(s.type for s in cls_targets)
+            qt_pairs = Counter((m.sv.type, m.optimal.sv_target.type) for m in cls_matches)
+            contiguous_qt_pairs = Counter((m.sv.type, m.optimal.sv_target.type)
+                                          for m in cls_matches if m.optimal.contiguous(side="target"))
             stats_by_class[cls] = {
                 "num_matches": len(cls_matches),
+                "num_contiguous_matches": sum(1 for m in cls_matches if m.optimal.contiguous(side="target")),
                 "num_unique_targets": len(cls_targets),
                 "mean_breakpoint_distance": float(np.mean([m.optimal.distance / m.optimal.num_matched for m in cls_matches])),
                 "mean_breakpoint_hit_rate": float(np.mean([m.optimal.num_matched / len(m.optimal.sv_target.bkps) for m in cls_matches])),
                 "mean_spurious_breakpoint_rate": float(np.mean([m.spurious / len(m.sv.bkps) for m in cls_matches])),
                 "mean_targets_per_record": float(np.mean([len({aln.sv_target.id for aln in m.alignments}) for m in cls_matches])),
+                "num_matches_by_query_target_type": {f"{q}/{t}": n for (q, t), n in qt_pairs.most_common()},
+                "num_contiguous_matches_by_query_target_type": {f"{q}/{t}": n for (q, t), n in contiguous_qt_pairs.most_common()},
                 "query_type_counts": dict(qtype_counts.most_common()),
                 "query_type_proportions": {t: c / query_type_totals[t] for t, c in qtype_counts.most_common()},
                 "target_type_counts": dict(ttype_counts.most_common()),

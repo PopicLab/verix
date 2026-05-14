@@ -123,11 +123,28 @@ class BreakpointAlignment:
     def coverage(self, side=None):
         return "full" if self.num_unmatched(side) == 0 else "partial"
 
+    def contiguous(self, side=None):
+        all_bp = self.sv_target.bkps if side == "target" else self.sv_query.bkps
+        matched_bp = self.assignment.values() if side == "target" else self.assignment.keys()
+        if len(matched_bp) < 2: return False
+        by_chrom = defaultdict(list)
+        matched_by_chrom = defaultdict(list)
+        for bp in all_bp: by_chrom[bp.chrom].append(bp)
+        for bp in matched_bp: matched_by_chrom[bp.chrom].append(bp)
+        multi = {c: m for c, m in matched_by_chrom.items() if len(m) >= 2}
+        if not multi: return False
+        for chrom, m in multi.items():
+            idx = sorted(by_chrom[chrom].index(bp) for bp in m)
+            if idx != list(range(idx[0], idx[0] + len(idx))): return False
+        return True
+
     def score(self, side=None):
         return self.num_unmatched(side), self.distance
 
     def __str__(self, side=None):
-        return ",".join(str(x) for x in (self.num_matched, self.distance, self.coverage(side="target"),
+        return ",".join(str(x) for x in (self.num_matched, self.distance,
+                                         self.coverage(side="target"),
+                                         self.contiguous(side="target"),
                                          ",".join(f"{p}-{t}" for p, t in self.assignment.items())))
 
 

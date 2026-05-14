@@ -27,10 +27,12 @@ def process_bkps(bkps_raw, chrom):
     return breakends
 
 def extract_breakends(rec, svid, vcf_format, bkp_link_field):
-    breakends = {(rec.chrom, rec.pos), (rec.chrom, rec.stop)}
+    breakends = set()
     if vcf_format == VCFFormat.SINGLE and bkp_link_field in rec.info:
         breakends.update(process_bkps(rec.info[bkp_link_field], rec.chrom))
-    elif 'TARGET' in rec.info:
+    else:
+        breakends.update({(rec.chrom, rec.pos), (rec.chrom, rec.stop)})
+    if 'TARGET' in rec.info:
         breakends.add((rec.info.get('TARGET_CHROM', rec.chrom), rec.info['TARGET']))
     return [Breakpoint(chrom=c, pos=p, svid=svid) for c, p in breakends]
 
@@ -47,9 +49,9 @@ def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax
         genotype = next(iter(rec.samples.values()), {}).get('GT', (None, None))
         if vcf_format == VCFFormat.MULTI and csv_link_name in rec.info: # use the provided link ID
             svid = rec.info[csv_link_name]
-        elif sv_type == "BND": # check for BND links
-            mate_info = find_mate(rec)
-            if not mate_info: raise ValueError(f"Could not find a matching BND record for {rec}")
+        # check for BND links
+        mate_info = find_mate(rec)
+        if mate_info:
             if mate_info in made2id: svid = made2id[mate_info]
             else: made2id[(rec.chrom, rec.pos)] = svid
         bkps = extract_breakends(rec, svid, vcf_format, csv_link_name)
@@ -111,6 +113,7 @@ def write_csv_vcf(callset, vcf_path):
 
 def write_bench_vcf(callset, matches, info_fields, vcf_path):
     header = create_base_header(callset.chrom_set, f'{__toolname__}_bench_{__version__}')
+    header.add_line('##INFO=<ID=ID,Number=.,Type=String,Description="Unique CSV identifier">')
     if callset.has_gt:
         header.add_line('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
     for name, (number, typ, desc) in info_fields.items():
@@ -120,6 +123,7 @@ def write_bench_vcf(callset, matches, info_fields, vcf_path):
     with VariantFile(vcf_path, 'w', header=header) as bench_vcf:
         for sv, match in zip(callset.svs, matches):
             rec = bench_vcf.new_record()
+            rec.info['ID'] = str(sv.id)
             populate_rec(rec, sv)
             if callset.has_gt: rec.samples[callset.sample_name]['GT'] = sv.genotype
             for key, val in match.to_vcf_info_dict().items():

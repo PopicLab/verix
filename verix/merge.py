@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, Counter
 import json
 import logging
 import networkx as nx
@@ -62,11 +62,18 @@ class MergeEngine:
         logging.info(f"Wrote consensus VCF to {filepath}")
 
     def write_stats(self, filepath):
+        support_vec_counts = Counter(",".join(str(v) for v in c.support_vec) for c in self.sv_clusters)
+        cluster_size_counts = Counter(c.size for c in self.sv_clusters)
         stats = {
             "n_total_variants": sum(len(c) for c in self.callsets),
             "n_variants_in_sample": {c.sample_name: len(c) for c in self.callsets},
             "n_clusters": len(self.sv_clusters),
             "support_vec_types": list(set(",".join(str(v) for v in c.support_vec) for c in self.sv_clusters)),
+            "n_singleton_clusters": sum(1 for c in self.sv_clusters if c.size == 1),
+            "n_multi_caller_clusters": sum(1 for c in self.sv_clusters if sum(1 for v in c.support_vec if v > 0) > 1),
+            "n_full_support_clusters": sum(1 for c in self.sv_clusters if all(v > 0 for v in c.support_vec)),
+            "support_vec_counts": dict(support_vec_counts.most_common()),
+            "cluster_size_counts": {str(k): v for k, v in sorted(cluster_size_counts.items())},
         }
         if self.sv_clusters:
            stats.update({
