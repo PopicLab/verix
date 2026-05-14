@@ -6,6 +6,7 @@
 * [Key Functionality](#func)
 * [Installation](#install)
 * [Quick Start](#start)
+* [Demo](#demo)  
 * [User Guide](#guide)
 
 
@@ -17,7 +18,7 @@ matching between these breakpoint sets that (1) maximizes the number of matched 
 distance between them. Two breakpoints are eligible to match only if they fall within a configurable distance threshold, 
 and matching can be additionally restricted to event pairs whose SV type and genotype agree. In benchmarking mode, 
 each query event is classified according to how its breakpoints line up with the target truthset, distinguishing 
-between complete reconstruction, partial capture, over-aggregation (i.e., call that collapsed multiple target events 
+between complete reconstruction, partial capture, over-aggregation (i.e., a call that collapsed multiple target events 
 into one), and fully spurious calls. To handle diverse callsets, `verix` supports multiple input VCF record 
 linking conventions to group related records into a single complex event. `verix` outputs annotated VCFs with 
 per-event match details, alongside comprehensive summary statistics and diagnostic plots.
@@ -29,7 +30,7 @@ per-event match details, alongside comprehensive summary statistics and diagnost
 * `bench`: Compares a query VCF against a truth VCF and assigns each query event a match class 
 (complete, partial, aggregate, or spurious). Outputs precision, recall, and F1 based on complete matches, along with 
 per-class breakpoint accuracy and hit-rate metrics, an annotated VCF with detailed match information 
-(e.g. breakpoint alignment) for every event, and summary plots.
+(e.g., breakpoint alignment) for every event, and summary plots.
 * `consensus`: Collapses matching events from one or more VCFs (e.g., from different callers or samples) into a single 
 representative call. Generates an integrated VCF with per-sample support annotations and summary statistics on 
 call concordance and support patterns.
@@ -56,6 +57,14 @@ Key outputs: `results/matches.vcf` with per-CSV match annotations and `results/r
 
 Key outputs: `results/merged.vcf` with matching calls collapsed into one record and `results/report.json` 
 with summary statistics.
+
+<a name="demo"></a>
+## Demo
+
+A small simulated dataset and usage examples are provided in the `demo/` folder. 
+The dataset (`demo/sim.vcf`) is a simulated SV truthset produced by [insilicoSV](https://github.com/PopicLab/insilicoSV), 
+containing 1,000 events of five different SV types (DEL, DUP_INV, dDUP, INVdel, delINVdel). 
+The tests for the `bench` and `consensus` commands are described in [demo/demo.md](demo/demo.md).
 
 <a name="guide"></a>
 ## User Guide
