@@ -21,6 +21,7 @@ def parse_args():
     shared.add_argument('-S', '--sizemax', metavar='', default=None, type=int, help='Maximum SV interval size')
     shared.add_argument('-b', '--merge_thr', metavar='', default=2, type=int,
                         help='Collapse breakends in a CSV within this distance into a single breakpoint')
+    shared.add_argument('--passonly', action='store_true', help='Only keep records whose FILTER is PASS or unset')
     shared.add_argument('--enforce_type', action='store_true', help='Require SV types to match')
     shared.add_argument('--enforce_genotype', action='store_true', help='Require SV genotypes to match')
     shared.add_argument('-f', '--formats', nargs='+', default=[], choices=[e.value for e in VCFFormat],
@@ -57,8 +58,8 @@ def benchmark(args):
     fq, ft = args.formats if args.formats else (VCFFormat.DEFAULT, VCFFormat.DEFAULT)
     lq, lt = args.csv_links if args.csv_links else (None, None)
     tq, tt = args.types if args.types else ("SVTYPE", "SVTYPE")
-    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr)
-    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr)
+    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly)
+    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly)
     logging.info(f"Loaded {len(query_svs)} query SVs")
     logging.info(f"Loaded {len(target_svs)} target/truthset SVs")
     engine = BenchmarkEngine(query_svs,
@@ -92,7 +93,8 @@ def consensus(args):
                              vcf_format=args.formats[i] if args.formats else VCFFormat.DEFAULT,
                              csv_link_name=args.csv_links[i] if args.csv_links else None,
                              type_name=args.types[i] if args.types else "SVTYPE",
-                             merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax, name=names[i]))
+                             merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax,
+                             name=names[i], passonly=args.passonly))
     engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
     engine.find_sv_clusters()
     engine.write_stats(Path(args.output_dir) / "report.json")
