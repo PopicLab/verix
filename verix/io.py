@@ -18,6 +18,9 @@ def find_mate(rec):
     if not match: return None
     return match.group(1), int(match.group(2))
 
+def record_passed(rec):
+    return len(rec.filter) == 0 or 'PASS' in rec.filter  # FILTER is PASS or unset ('.')
+
 def process_bkps(bkps_raw, chrom):
     breakends = []
     for segment in (bkps_raw if isinstance(bkps_raw, (list, tuple)) else [bkps_raw]):
@@ -36,7 +39,8 @@ def extract_breakends(rec, svid, vcf_format, bkp_link_field):
         breakends.add((rec.info.get('TARGET_CHROM', rec.chrom), rec.info['TARGET']))
     return [Breakpoint(chrom=c, pos=p, svid=svid) for c, p in breakends]
 
-def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax, merge_threshold, name=None):
+def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax, merge_threshold, name=None,
+              passonly=False):
     sv_groups = {}
     made2id = {}
     # --- parse and group all CSV records
@@ -62,6 +66,12 @@ def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax
             sv_groups[svid]['records'].append(rec)
         else:
             sv_groups[svid] = {'genotype': genotype, 'types': {sv_type}, 'vcf_bp': list(bkps), 'records': [rec]}
+
+    # --- drop each CSV with at least one record that didn't pass the FILTER
+    if passonly:
+        passing_groups = {svid: g for svid, g in sv_groups.items() if all(record_passed(r) for r in g['records'])}
+        logging.info(f'Excluded {len(sv_groups) - len(passing_groups)} CSVs with non-PASS records from {input_file}')
+        sv_groups = passing_groups
     if not sv_groups: logging.warning(f'No SVs found in {input_file}')
 
     svs = []
