@@ -114,7 +114,7 @@ def test_classification(tmp_path):
     stats = json.loads(stats_path.read_text())
     assert stats["n_query"] == 10
     assert stats["n_target"] == 2
-    assert stats["tp"] == 1
+    assert stats["tp_target"] == stats["tp_query"] == 1
     assert stats["fp"] == 9
     assert stats["fn"] == 1
     assert stats["class_proportions"]["complete"] == pytest.approx(1 / 10)
