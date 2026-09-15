@@ -19,7 +19,7 @@ def find_mate(rec):
     return match.group(1), int(match.group(2))
 
 def record_passed(rec):
-    return len(rec.filter) == 0 or 'PASS' in rec.filter  # FILTER is PASS or unset ('.')
+    return 'PASS' in rec.filter
 
 def process_bkps(bkps_raw, chrom):
     breakends = []
