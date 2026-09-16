@@ -176,7 +176,8 @@ class BenchmarkEngine:
                 "target_type_counts": dict(ttype_counts.most_common()),
                 "target_type_proportions": {t: c / target_type_totals[t] for t, c in ttype_counts.most_common()},
             }
-        stats["class_proportions"] = {cls.value: len(class2query[cls]) / n_query for cls in MatchType}
+        if n_query:
+            stats["class_proportions"] = {cls.value: len(class2query[cls]) / n_query for cls in MatchType}
         stats["by_class"] = {cls.value: stats_by_class[cls]
                              for cls in (MatchType.COMPLETE, MatchType.PARTIAL, MatchType.AGGREGATE)
                              if cls in stats_by_class}
