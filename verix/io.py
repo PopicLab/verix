@@ -41,7 +41,7 @@ def extract_breakends(rec, svid, vcf_format, bkp_link_field, collect_ins=False, 
         breakends.update(process_bkps(rec.info[bkp_link_field], rec.chrom, svid, collect_ins))
     else:
         svtype = rec.info.get("SVTYPE", None)
-        if svtype == "INS" and not breakend_mode:
+        if svtype == "INS":
             ins_len = None
             if "SVLEN" in rec.info: ins_len = abs(int(rec.info["SVLEN"]))
             breakends.add(Breakpoint(rec.chrom, rec.pos, svid, ins_len=ins_len))
