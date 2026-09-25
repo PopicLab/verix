@@ -80,8 +80,8 @@ events with at least one interval smaller than `--sizemin` or larger than `--siz
 during breakpoint matching, candidates are restricted to breakpoints of the same type (i.e., insertion breakpoints can only 
 match other insertion breakpoints)
 
-- `--breakend_mode`: when enabled, matching is performed by breakend position and orientation 
-(breakends can match be merged or be matched only when they have the same orientation; only `BND` records are permitted
+- `--breakend_mode`: when enabled, `verix` switches to breakend matching (by both position and orientation); 
+breakends can be matched or merged only when they have the same orientation; only `BND` records are permitted
 
 <a name="inputs"></a>
 ### VCF Inputs
