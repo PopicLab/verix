@@ -32,6 +32,7 @@ params:
 -b, --merge_thr       Collapse breakends in a CSV within this distance into a single breakpoint (default: 1)
 --enforce_type        Require SV types to match (default: False)
 --enforce_genotype    Require SV genotypes to match (default: False)
+--enforce_ins         Allow INS breakpoints to only match other INS breakpoints (default: False)
 -f, --formats {multi,single,default} [{multi,single,default} ...]
                       Format type for each VCF (for bench: query, target) (default: default[default...])
 -l, --csv_links LINK [LINK ...]
@@ -54,6 +55,7 @@ params:
 -b, --merge_thr       Collapse breakends in a CSV within this distance into a single breakpoint (default: 1)
 --enforce_type        Require SV types to match (default: False)
 --enforce_genotype    Require SV genotypes to match (default: False)
+--enforce_ins         Allow INS breakpoints to only match other INS breakpoints (default: False)
 -f, --formats {multi,single,default} [{multi,single,default} ...]
                       Format type for each VCF (for bench: query, target) (default: default[default...])
 -l, --csv_links LINK [LINK ...]
@@ -72,6 +74,9 @@ params:
 - `--sizemin` / `--sizemax`: size filters applied to intervals between consecutive breakpoints on the same chromosome within a CSV; 
 events with at least one interval smaller than `--sizemin` or larger than `--sizemax` are removed
 
+- `--enforce_ins`: when enabled, insertion breakpoints are prevented from merging with structural breakpoints;
+during breakpoint matching, candidates are restricted to breakpoints of the same type (i.e., insertion breakpoints can only 
+match other insertion breakpoints).
 
 <a name="inputs"></a>
 ### VCF Inputs
@@ -95,6 +100,12 @@ how to group input records in each VCF:
 linked record; if a CSV spans records with multiple distinct types, the values are joined with `+` in sorted order 
 to form a consolidated type string.
 
+**Insertion parsing**: when `--enforce_ins` is enabled, `verix` identifies novel sequence insertion breakpoints 
+and extracts their length according to the specified format: 
+- **`default` and `multi`**: for explicit `INS` records (with `SVTYPE` set to `INS`) it uses the `SVLEN` INFO field; 
+for `BND` records (with `SVTYPE` set to `BND`) it checks for any novel sequence in the `ALT` string
+- **`single`**: checks the `prefix` of each entry (see below) in the custom INFO field, records the insertion if provided as `INS:<length>`
+
 ###### Expected INFO field structure for the `single` record VCF format 
 
 The INFO field provided using `--csv_links` (storing the internal breakpoints of a CSV record) is expected in the
@@ -103,7 +114,7 @@ following format:
 ```<prefix>-<bp_1>[-<bp_2>...]```
 
 where each `<bp_i>` is either `<chr>:<pos>` or just `<pos>` (defaults to the record's `CHROM`). 
-Note: the leading `<prefix>` is ignored by the `verix` parser (anything before the first `-` is discarded )
+Note: the leading `<prefix>` is ignored by the `verix` parser by default (anything before the first `-` is discarded )
 
 ### Outputs
 

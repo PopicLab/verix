@@ -17,13 +17,14 @@ def parse_args():
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument('-o', '--output_dir', metavar='', required=True, help='Output directory')
     shared.add_argument('-d', '--match_thr', metavar='', default=500, type=int, help='Max distance between matching breakpoints')
-    shared.add_argument('-s', '--sizemin', metavar='', default=0, type=int, help='Minimum SV interval size')
-    shared.add_argument('-S', '--sizemax', metavar='', default=None, type=int, help='Maximum SV interval size')
+    shared.add_argument('-s', '--sizemin', metavar='', default=0, type=int, help='Min allowed distance between SV breakpoints (applies to SVs with >=2 breakpoints; inter-chromosomal distance = Inf)')
+    shared.add_argument('-S', '--sizemax', metavar='', default=None, type=int, help='Max allowed distance between SV breakpoints (applies to SVs with >=2 breakpoints; inter-chromosomal distance = Inf)')
     shared.add_argument('-b', '--merge_thr', metavar='', default=2, type=int,
                         help='Collapse breakends in a CSV within this distance into a single breakpoint')
-    shared.add_argument('--passonly', action='store_true', help='Only keep records whose FILTER is PASS or unset')
+    shared.add_argument('--passonly', action='store_true', help='Only keep records whose FILTER is PASS')
     shared.add_argument('--enforce_type', action='store_true', help='Require SV types to match')
     shared.add_argument('--enforce_genotype', action='store_true', help='Require SV genotypes to match')
+    shared.add_argument('--enforce_ins', action='store_true', help='Allow INS breakpoints to only match other INS breakpoints')
     shared.add_argument('-f', '--formats', nargs='+', default=[], choices=[e.value for e in VCFFormat],
                         help='Format type for each VCF (expected order for bench: query, target)')
     shared.add_argument('-l', '--csv_links', metavar='LINK', nargs='+', default=[],
@@ -58,13 +59,14 @@ def benchmark(args):
     fq, ft = args.formats if args.formats else (VCFFormat.DEFAULT, VCFFormat.DEFAULT)
     lq, lt = args.csv_links if args.csv_links else (None, None)
     tq, tt = args.types if args.types else ("SVTYPE", "SVTYPE")
-    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly)
-    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly)
+    query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly,
+                          enforce_ins=args.enforce_ins)
+    target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly,
+                           enforce_ins=args.enforce_ins)
     logging.info(f"Loaded {len(query_svs)} query SVs")
     logging.info(f"Loaded {len(target_svs)} target/truthset SVs")
-    engine = BenchmarkEngine(query_svs,
-                             target_svs,
-                             BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
+    engine = BenchmarkEngine(query_svs, target_svs, BreakpointAligner(args.match_thr, args.enforce_type,
+                                                                      args.enforce_genotype, args.enforce_ins))
     engine.find_matches()
     engine.write_stats(Path(args.output_dir) / "report.json")
     engine.write_vcf(Path(args.output_dir) / "matches.vcf")
@@ -95,7 +97,8 @@ def consensus(args):
                              type_name=args.types[i] if args.types else "SVTYPE",
                              merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax,
                              name=names[i], passonly=args.passonly))
-    engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type, args.enforce_genotype))
+    engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type,
+                                                args.enforce_genotype, args.enforce_ins))
     engine.find_sv_clusters()
     engine.write_stats(Path(args.output_dir) / "report.json")
     engine.write_vcf(Path(args.output_dir) / "merged.vcf")

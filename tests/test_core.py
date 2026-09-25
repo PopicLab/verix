@@ -17,19 +17,39 @@ def test_consolidate_breakpoints():
         Breakpoint("chr1", 102, "x"),  # within thr=2 of 100
         Breakpoint("chr1", 200, "x"),
         Breakpoint("chr2", 200, "x"),  # different chrom -> separate group
+        Breakpoint("chr1", 100, "x", ins_len=50)
     ]
-    merged = SV.consolidate_breakpoints(bps, bp_merge_threshold=2)
+    merged = SV.consolidate_breakpoints(bps, bp_merge_threshold=2, split_ins=False)
     # 100/101 collapse, chr1:200 alone, chr2:200 -> 3 breakpoints
     assert len(merged) == 3
     assert (merged[0].chrom, merged[0].pos) == ("chr1", 101)
+    merged = SV.consolidate_breakpoints(bps, bp_merge_threshold=2, split_ins=True)
+    assert len(merged) == 4
 
 def test_min_max_size():
-    sv = sv_factory("s", "BND", "chr1", [100, 110, 200])
-    sv.bkps.append(Breakpoint("chr2", 50, "s"))
-    sv.end = sv.bkps[0]
-    sv.end = sv.bkps[-1]
+    sv = sv_factory("s", "X", "chr1", [100, 110, 200])
     mn, mx = sv.get_min_max_size()
     assert (mn, mx) == (10, 90)
+    sv.bkps.append(Breakpoint("chr2", 50, "s"))
+    sv.end = sv.bkps[-1]
+    mn, mx = sv.get_min_max_size()
+    assert (mn, mx) == (10, float('inf'))
+    sv = sv_factory("s", "X", "chr1", [100])
+    mn, mx = sv.get_min_max_size()
+    assert (mn, mx) == (float('inf'), float('inf'))
+
+def test_enforce_ins():
+    q = sv_factory("q", "INV", "chr1", [100, 200])
+    t_bps = [Breakpoint("chr1", 100, "t"),
+             Breakpoint("chr1", 100, "t", ins_len=20),
+             Breakpoint("chr1", 200, "t"),
+             Breakpoint("chr1", 200, "t", ins_len=50)]
+    t_bps = SV.consolidate_breakpoints(t_bps, bp_merge_threshold=2, split_ins=True)
+    t = SV("t", "INV", t_bps, None, None, None)
+    cs = Callset([t])
+    assert len(BreakpointAligner(50, enforce_ins=True).find_candidates(q, cs)) == 1
+    assert len(BreakpointAligner(50, enforce_ins=True).find_candidates(q, cs)["t"]) == 2
+    assert len(BreakpointAligner(50, enforce_ins=False).find_candidates(q, cs)["t"]) == 4
 
 def test_callset_lookup_breakpoints():
     sv = sv_factory("s", "DEL", "chr1", [100, 200, 300])
