@@ -39,6 +39,7 @@ params:
                       INFO field for CSV linking in each VCF (for bench: query, target) (default: [])
 -svt, --types TYPES [TYPES ...]
                       INFO field for SV type extraction (default: SVTYPE[SVTYPE...])
+--breakend_mode       Switch to oriented breakend matching (only BND entries will be processed) (default: False)
 ```
 
 `verix consensus`: merges multiple VCF files into a single consensus callset
@@ -62,6 +63,7 @@ params:
                       INFO field for CSV linking in each VCF (for bench: query, target) (default: [])
 -svt, --types TYPES [TYPES ...]
                       INFO field for SV type extraction (default: SVTYPE[SVTYPE...])
+--breakend_mode       Switch to oriented breakend matching (only BND entries will be processed) (default: False)
 ```
 
 #### Core parameters
@@ -76,7 +78,10 @@ events with at least one interval smaller than `--sizemin` or larger than `--siz
 
 - `--enforce_ins`: when enabled, insertion breakpoints are prevented from merging with structural breakpoints;
 during breakpoint matching, candidates are restricted to breakpoints of the same type (i.e., insertion breakpoints can only 
-match other insertion breakpoints).
+match other insertion breakpoints)
+
+- `--breakend_mode`: when enabled, `verix` switches to breakend matching (by both position and orientation); 
+breakends can be matched or merged only when they have the same orientation; only `BND` records are permitted
 
 <a name="inputs"></a>
 ### VCF Inputs
@@ -104,7 +109,10 @@ to form a consolidated type string.
 and extracts their length according to the specified format: 
 - **`default` and `multi`**: for explicit `INS` records (with `SVTYPE` set to `INS`) it uses the `SVLEN` INFO field; 
 for `BND` records (with `SVTYPE` set to `BND`) it checks for any novel sequence in the `ALT` string
-- **`single`**: checks the `prefix` of each entry (see below) in the custom INFO field, records the insertion if provided as `INS:<length>`
+- **`single`**: checks the `prefix` of each entry (see below) in the custom INFO field, records the insertion if provided as `INS:<length>`.
+
+**Orientation parsing**: when `--breakend_mode` is enabled, `verix` extracts the breakend orientation from 
+the `ALT` string of standard `BND` records based on the placement of the reference nucleotide.
 
 ###### Expected INFO field structure for the `single` record VCF format 
 

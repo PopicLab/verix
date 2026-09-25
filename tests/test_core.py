@@ -51,6 +51,21 @@ def test_enforce_ins():
     assert len(BreakpointAligner(50, enforce_ins=True).find_candidates(q, cs)["t"]) == 2
     assert len(BreakpointAligner(50, enforce_ins=False).find_candidates(q, cs)["t"]) == 4
 
+def test_breakend_mode():
+    bps = [Breakpoint("chr1", 100, "x", orientation="L"),
+           Breakpoint("chr1", 100, "x", orientation="R")]
+    assert len(SV.consolidate_breakpoints(bps, bp_merge_threshold=2, breakend_mode=False)) == 1
+    assert len(SV.consolidate_breakpoints(bps, bp_merge_threshold=2, breakend_mode=True)) == 2
+
+    q = sv_factory("q", "BND", "chr1", [100, 200])
+    q.bkps[0].orientation, q.bkps[1].orientation = "L", "R"
+    t_bps = [Breakpoint("chr1", 100, "t", orientation="R"),
+             Breakpoint("chr1", 200, "t", orientation="R")]
+    t = SV("t", "BND", t_bps, None, None, None)
+    cs = Callset([t])
+    assert len(BreakpointAligner(50, breakend_mode=True).find_candidates(q, cs)["t"]) == 1
+    assert len(BreakpointAligner(50, breakend_mode=False).find_candidates(q, cs)["t"]) == 2
+
 def test_callset_lookup_breakpoints():
     sv = sv_factory("s", "DEL", "chr1", [100, 200, 300])
     cs = Callset([sv])

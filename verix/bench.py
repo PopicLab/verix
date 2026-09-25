@@ -203,9 +203,12 @@ class BenchmarkEngine:
              "UNION_COV": "miss" if s.id not in self.target_matches else \
                  "full" if len(self.target_matches[s.id]) == len(s.bkps) else "partial"}
             for s in self.target.svs])
-        plotter = BenchPlotter(filepath, match_df, target_df, self.compute_stats())
-        plotter.make_plots()
-        logging.info(f"Generated plots in: {filepath}")
+        if match_df.empty or target_df.empty:
+            logging.info(f"Skipped plot generation (empty targets or matches)")
+        else:
+            plotter = BenchPlotter(filepath, match_df, target_df, self.compute_stats())
+            plotter.make_plots()
+            logging.info(f"Generated plots in: {filepath}")
 
 
 
