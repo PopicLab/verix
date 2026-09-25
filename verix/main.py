@@ -30,7 +30,8 @@ def parse_args():
     shared.add_argument('-l', '--csv_links', metavar='LINK', nargs='+', default=[],
                        help='INFO field for CSV linking in each VCF (expected order for bench: query, target)')
     shared.add_argument('-svt', '--types', nargs='+', default=[], help='INFO field for SV type extraction (default SVTYPE)')
-
+    shared.add_argument('--breakend_mode', action='store_true',
+                        help='Switch to oriented breakend matching (only BND entries will be processed)')
     # Benchmarking parameters
     bench = subparsers.add_parser('bench', parents=[shared], help='Compare two VCF files (query and target/truthset)',
                                   formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -59,14 +60,17 @@ def benchmark(args):
     fq, ft = args.formats if args.formats else (VCFFormat.DEFAULT, VCFFormat.DEFAULT)
     lq, lt = args.csv_links if args.csv_links else (None, None)
     tq, tt = args.types if args.types else ("SVTYPE", "SVTYPE")
+    if args.breakend_mode and VCFFormat.SINGLE in (fq, ft):
+        raise ValueError("--breakend_mode cannot be used with the 'single' VCF format.")
     query_svs = parse_vcf(args.query, fq, lq, tq, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly,
-                          enforce_ins=args.enforce_ins)
+                          enforce_ins=args.enforce_ins, breakend_mode=args.breakend_mode)
     target_svs = parse_vcf(args.target, ft, lt, tt, args.sizemin, args.sizemax, args.merge_thr, passonly=args.passonly,
-                           enforce_ins=args.enforce_ins)
+                           enforce_ins=args.enforce_ins, breakend_mode=args.breakend_mode)
     logging.info(f"Loaded {len(query_svs)} query SVs")
     logging.info(f"Loaded {len(target_svs)} target/truthset SVs")
     engine = BenchmarkEngine(query_svs, target_svs, BreakpointAligner(args.match_thr, args.enforce_type,
-                                                                      args.enforce_genotype, args.enforce_ins))
+                                                                      args.enforce_genotype, args.enforce_ins,
+                                                                      args.breakend_mode))
     engine.find_matches()
     engine.write_stats(Path(args.output_dir) / "report.json")
     engine.write_vcf(Path(args.output_dir) / "matches.vcf")
@@ -87,6 +91,8 @@ def consensus(args):
             raise ValueError(f"--names cannot have duplicate entries")
     if not args.formats and args.csv_links:
         raise ValueError("--csv_links requires --formats to be set")
+    if args.breakend_mode and args.formats and VCFFormat.SINGLE in args.formats:
+        raise ValueError("--breakend_mode cannot be used with the 'single' VCF format.")
     logging.info(f"Parsing {len(args.inputs)} VCF files for consensus generation...")
     names = args.names or range(len(args.inputs))
     svs = []
@@ -96,9 +102,10 @@ def consensus(args):
                              csv_link_name=args.csv_links[i] if args.csv_links else None,
                              type_name=args.types[i] if args.types else "SVTYPE",
                              merge_threshold=args.merge_thr, sizemin=args.sizemin, sizemax=args.sizemax,
-                             name=names[i], passonly=args.passonly))
+                             name=names[i], passonly=args.passonly, enforce_ins=args.enforce_ins,
+                             breakend_mode=args.breakend_mode))
     engine = MergeEngine(svs, BreakpointAligner(args.match_thr, args.enforce_type,
-                                                args.enforce_genotype, args.enforce_ins))
+                                                args.enforce_genotype, args.enforce_ins, args.breakend_mode))
     engine.find_sv_clusters()
     engine.write_stats(Path(args.output_dir) / "report.json")
     engine.write_vcf(Path(args.output_dir) / "merged.vcf")

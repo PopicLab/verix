@@ -5,21 +5,23 @@ from networkx.algorithms.matching import min_weight_matching
 import bisect
 
 class Breakpoint:
-    __slots__ = ('chrom', 'pos', 'id', 'ins_len')
-    def __init__(self, chrom, pos, svid, ins_len=None):
+    __slots__ = ('chrom', 'pos', 'id', 'ins_len', 'orientation')
+    def __init__(self, chrom, pos, svid, ins_len=None, orientation=None):
         self.chrom = chrom
         self.pos = pos
         self.id = svid
         self.ins_len = ins_len
+        self.orientation = orientation
 
     def is_ins(self):
         return self.ins_len is not None
 
     def __eq__(self, other):
-        return self.chrom == other.chrom and self.pos == other.pos and self.id == other.id
+        return (self.chrom == other.chrom and self.pos == other.pos and self.id == other.id and
+                self.ins_len == other.ins_len and self.orientation == other.orientation)
 
     def __hash__(self):
-        return hash((self.chrom, self.pos, self.id))
+        return hash((self.chrom, self.pos, self.id, self.is_ins(), self.orientation))
 
     def __str__(self):
         return f"{self.chrom}:{self.pos}"
@@ -37,11 +39,12 @@ class SV:
         self.end = self.bkps[-1]
 
     @classmethod
-    def from_records(cls, svid, records, vcf_bp, types, genotype, sample_name, bp_merge_threshold, split_ins=False):
+    def from_records(cls, svid, records, vcf_bp, types, genotype, sample_name, bp_merge_threshold,
+                     split_ins=False, breakend_mode=False):
         return cls(
             svid=svid,
             svtype=cls.consolidate_type(types),
-            bkps=cls.consolidate_breakpoints(vcf_bp, bp_merge_threshold, split_ins),
+            bkps=cls.consolidate_breakpoints(vcf_bp, bp_merge_threshold, split_ins, breakend_mode),
             genotype=genotype,
             sample_name=sample_name,
             records=records,
@@ -52,13 +55,18 @@ class SV:
         return '+'.join(sorted(types))
 
     @staticmethod
-    def consolidate_breakpoints(bps, bp_merge_threshold, split_ins=False):
+    def consolidate_breakpoints(bps, bp_merge_threshold, split_ins=False, breakend_mode=False):
         groups = []
-        sort_key = (lambda b: (b.chrom, b.is_ins(), b.pos)) if split_ins else (lambda b: (b.chrom, b.pos))
+        def sort_key(b):
+            orientation = b.orientation if breakend_mode else None
+            ins = b.is_ins() if split_ins else False
+            return b.chrom, orientation, ins, b.pos
+
         for bp in sorted(bps, key=sort_key):
             if (groups and bp.chrom == groups[-1][-1].chrom and
                     bp.pos - groups[-1][-1].pos <= bp_merge_threshold):
-                if split_ins and bp.is_ins() != groups[-1][-1].is_ins():
+                if (split_ins and bp.is_ins() != groups[-1][-1].is_ins()) or \
+                   (breakend_mode and bp.orientation != groups[-1][-1].orientation):
                     groups.append([bp])
                 else:
                     groups[-1].append(bp)
@@ -167,17 +175,20 @@ class BreakpointAlignment:
 
 
 class BreakpointAligner:
-    def __init__(self, thresh=500, enforce_type=False, enforce_genotype=False, enforce_ins=False):
+    def __init__(self, thresh=500, enforce_type=False, enforce_genotype=False, enforce_ins=False,
+                 breakend_mode=False):
         self.thresh = thresh
         self.enforce_type = enforce_type
         self.enforce_genotype = enforce_genotype
         self.enforce_ins = enforce_ins
+        self.breakend_mode = breakend_mode
 
     def find_candidates(self, sv_query, target_callset):
         candidates = defaultdict(list)
         for b in sv_query.bkps:
             for target_b in target_callset.lookup_breakpoints(b.chrom, b.pos - self.thresh, b.pos + self.thresh):
                 if self.enforce_ins and b.is_ins() != target_b.is_ins(): continue
+                if self.breakend_mode and b.orientation != target_b.orientation: continue
                 gt_sv = target_callset.id2sv[target_b.id]
                 if self.enforce_type and gt_sv.type != sv_query.type: continue
                 if self.enforce_genotype and gt_sv.genotype != sv_query.genotype: continue
