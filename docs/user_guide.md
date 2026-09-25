@@ -104,7 +104,7 @@ to form a consolidated type string.
 and extracts their length according to the specified format: 
 - **`default` and `multi`**: for explicit `INS` records (with `SVTYPE` set to `INS`) it uses the `SVLEN` INFO field; 
 for `BND` records (with `SVTYPE` set to `BND`) it checks for any novel sequence in the `ALT` string
-- **`single`**: checks the `prefix` of each entry in the custom INFO field, records the insertion if provided as `INS:<length>`
+- **`single`**: checks the `prefix` of each entry (see below) in the custom INFO field, records the insertion if provided as `INS:<length>`
 
 ###### Expected INFO field structure for the `single` record VCF format 
 
