@@ -21,26 +21,44 @@ def find_mate(rec):
 def record_passed(rec):
     return 'PASS' in rec.filter
 
-def process_bkps(bkps_raw, chrom):
+def process_bkps(bkps_raw, chrom, collect_ins=False):
     breakends = []
     for segment in (bkps_raw if isinstance(bkps_raw, (list, tuple)) else [bkps_raw]):
-        for bp in segment.split('-')[1:]:
+        bkp_entries = segment.split('-')
+        ins_len = None
+        if collect_ins:
+            prefix = bkp_entries[0]
+            bp_type, seg_len = prefix.split(':')
+            if bp_type == "INS": ins_len = int(seg_len)
+        for bp in bkp_entries[1:]:
             chrom, pos = bp.split(':') if ':' in bp else (chrom, bp)
-            breakends.append((chrom, int(pos)))
+            breakends.append((chrom, int(pos), ins_len))
     return breakends
 
-def extract_breakends(rec, svid, vcf_format, bkp_link_field):
+def extract_breakends(rec, svid, vcf_format, bkp_link_field, collect_ins=False):
     breakends = set()
     if vcf_format == VCFFormat.SINGLE and bkp_link_field in rec.info:
-        breakends.update(process_bkps(rec.info[bkp_link_field], rec.chrom))
+        breakends.update(process_bkps(rec.info[bkp_link_field], rec.chrom, collect_ins))
     else:
-        breakends.update({(rec.chrom, rec.pos), (rec.chrom, rec.stop)})
+        svtype = rec.info.get("SVTYPE", None)
+        if svtype == "INS":
+            ins_len = None
+            if "SVLEN" in rec.info: ins_len = abs(int(rec.info["SVLEN"]))
+            breakends.add((rec.chrom, rec.pos, ins_len))
+        elif svtype == "BND":
+            breakends.add((rec.chrom, rec.pos, None))
+            if collect_ins and rec.alts and ('[' in rec.alts[0] or ']' in rec.alts[0]):
+                bnd_seq = re.sub(r'[\[\]][^\[\]]+:\d+[\[\]]', '', rec.alts[0])
+                if len(bnd_seq)-1 > 0:
+                    breakends.add((rec.chrom, rec.pos, len(bnd_seq) - 1))
+        else:
+            breakends.update({(rec.chrom, rec.pos, None), (rec.chrom, rec.stop, None)})
     if 'TARGET' in rec.info:
-        breakends.add((rec.info.get('TARGET_CHROM', rec.chrom), rec.info['TARGET']))
-    return [Breakpoint(chrom=c, pos=p, svid=svid) for c, p in breakends]
+        breakends.add((rec.info.get('TARGET_CHROM', rec.chrom), rec.info['TARGET'], None))
+    return [Breakpoint(chrom=c, pos=p, svid=svid, ins_len=i) for c, p, i in breakends]
 
 def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax, merge_threshold, name=None,
-              passonly=False):
+              passonly=False, enforce_ins=False):
     sv_groups = {}
     made2id = {}
     # --- parse and group all CSV records
@@ -58,7 +76,7 @@ def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax
         if mate_info:
             if mate_info in made2id: svid = made2id[mate_info]
             else: made2id[(rec.chrom, rec.pos)] = svid
-        bkps = extract_breakends(rec, svid, vcf_format, csv_link_name)
+        bkps = extract_breakends(rec, svid, vcf_format, csv_link_name, collect_ins=enforce_ins)
         if svid in sv_groups:
             if sv_groups[svid]['genotype'] != genotype: raise ValueError(f"Genotype conflict grouping record {rec}")
             sv_groups[svid]['types'].add(sv_type)
@@ -76,7 +94,8 @@ def parse_vcf(input_file, vcf_format, csv_link_name, type_name, sizemin, sizemax
 
     svs = []
     for svid, g in sv_groups.items():
-        sv = SV.from_records(svid=svid, sample_name=sample_name, bp_merge_threshold=merge_threshold, **g)
+        sv = SV.from_records(svid=svid, sample_name=sample_name, bp_merge_threshold=merge_threshold,
+                             split_ins=enforce_ins, **g)
         min_size, max_size = sv.get_min_max_size()
         if sizemin <= min_size and max_size <= (sizemax or float('inf')): svs.append(sv)
     if not svs and sv_groups: logging.warning(f'No SVs left after size filtering in {input_file}')

@@ -5,11 +5,15 @@ from networkx.algorithms.matching import min_weight_matching
 import bisect
 
 class Breakpoint:
-    __slots__ = ('chrom', 'pos', 'id')
-    def __init__(self, chrom, pos, svid):
+    __slots__ = ('chrom', 'pos', 'id', 'ins_len')
+    def __init__(self, chrom, pos, svid, ins_len=None):
         self.chrom = chrom
         self.pos = pos
         self.id = svid
+        self.ins_len = ins_len
+
+    def is_ins(self):
+        return self.ins_len is not None
 
     def __eq__(self, other):
         return self.chrom == other.chrom and self.pos == other.pos and self.id == other.id
@@ -33,11 +37,11 @@ class SV:
         self.end = self.bkps[-1]
 
     @classmethod
-    def from_records(cls, svid, records, vcf_bp, types, genotype, sample_name, bp_merge_threshold):
+    def from_records(cls, svid, records, vcf_bp, types, genotype, sample_name, bp_merge_threshold, split_ins=False):
         return cls(
             svid=svid,
             svtype=cls.consolidate_type(types),
-            bkps=cls.consolidate_breakpoints(vcf_bp, bp_merge_threshold),
+            bkps=cls.consolidate_breakpoints(vcf_bp, bp_merge_threshold, split_ins),
             genotype=genotype,
             sample_name=sample_name,
             records=records,
@@ -48,23 +52,37 @@ class SV:
         return '+'.join(sorted(types))
 
     @staticmethod
-    def consolidate_breakpoints(bps, bp_merge_threshold):
+    def consolidate_breakpoints(bps, bp_merge_threshold, split_ins=False):
         groups = []
-        for bp in sorted(bps, key=lambda b: (b.chrom, b.pos)):
+        sort_key = (lambda b: (b.chrom, b.is_ins(), b.pos)) if split_ins else (lambda b: (b.chrom, b.pos))
+        for bp in sorted(bps, key=sort_key):
             if (groups and bp.chrom == groups[-1][-1].chrom and
-                    bp.pos - groups[-1][-1].pos <= bp_merge_threshold): groups[-1].append(bp)
+                    bp.pos - groups[-1][-1].pos <= bp_merge_threshold):
+                if split_ins and bp.is_ins() != groups[-1][-1].is_ins():
+                    groups.append([bp])
+                else:
+                    groups[-1].append(bp)
             else: groups.append([bp])
-        return [g[len(g) // 2] for g in groups]
+        consolidated = []
+        for g in groups:
+            median_bp = g[len(g) // 2]
+            if not split_ins:
+                median_bp.ins_len = None
+            consolidated.append(median_bp)
+        return sorted(consolidated, key=lambda b: (b.chrom, b.pos))
 
     def get_min_max_size(self):
-        min_size, max_size = 0, 0
+        if len(self.bkps) < 2: return float('inf'), float('inf')
+        has_inter_chrom = False
+        sizes = []
         for b1, b2 in zip(self.bkps, self.bkps[1:]):
-            if b1.chrom != b2.chrom: continue
-            interval_len = abs(b1.pos - b2.pos)
-            if not min_size or interval_len < min_size:
-                min_size = interval_len
-            if not max_size or interval_len >= max_size:
-                max_size = interval_len
+            if b1.chrom == b2.chrom:
+                sizes.append(abs(b1.pos - b2.pos))
+            else:
+                has_inter_chrom = True
+        if not sizes: return float('inf'), float('inf')
+        min_size = min(sizes)
+        max_size = float('inf') if has_inter_chrom else max(sizes)
         return min_size, max_size
 
     def breakpoints2str(self):
@@ -149,15 +167,17 @@ class BreakpointAlignment:
 
 
 class BreakpointAligner:
-    def __init__(self, thresh=500, enforce_type=False, enforce_genotype=False):
+    def __init__(self, thresh=500, enforce_type=False, enforce_genotype=False, enforce_ins=False):
         self.thresh = thresh
         self.enforce_type = enforce_type
         self.enforce_genotype = enforce_genotype
+        self.enforce_ins = enforce_ins
 
     def find_candidates(self, sv_query, target_callset):
         candidates = defaultdict(list)
         for b in sv_query.bkps:
             for target_b in target_callset.lookup_breakpoints(b.chrom, b.pos - self.thresh, b.pos + self.thresh):
+                if self.enforce_ins and b.is_ins() != target_b.is_ins(): continue
                 gt_sv = target_callset.id2sv[target_b.id]
                 if self.enforce_type and gt_sv.type != sv_query.type: continue
                 if self.enforce_genotype and gt_sv.genotype != sv_query.genotype: continue
